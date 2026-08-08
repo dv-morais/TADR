@@ -32,6 +32,13 @@
 // ones), not a pure engine-bug fix, so it is scoped to this config only.
 #define REPAIR_RATE_FIX_ENABLE 1
 
+// Build-Power-scaled reclaim speed, an energy cost, and multi-unit assist stacking for
+// feature reclaim. See ReclaimAssist.h for the full derivation, the tuning guide, and why
+// this ships OFF by default in every config, including this one -- it is a deliberate
+// balance change (vanilla reclaim being free, flat-rate, and non-stacking is 25-year-old
+// shipped behaviour, not a bug), not a fix, so a mod owner opts in explicitly.
+#define RECLAIM_ASSIST_ENABLE 0
+
 //
 // Environment / sim sync
 //

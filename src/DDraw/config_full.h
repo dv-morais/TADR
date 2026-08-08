@@ -30,6 +30,9 @@
 // See CLAUDE.md / config_escalation.h -- Escalation-only balance nerf, not enabled here.
 #define REPAIR_RATE_FIX_ENABLE 0
 
+// See ReclaimAssist.h -- opt-in balance change, off in every config by default.
+#define RECLAIM_ASSIST_ENABLE 0
+
 //
 // Environment / sim sync
 //

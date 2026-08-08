@@ -259,6 +259,9 @@
     <ClCompile Include="RepairRateFix.cpp">
       <Filter>Source Files</Filter>
     </ClCompile>
+    <ClCompile Include="ReclaimAssist.cpp">
+      <Filter>Source Files</Filter>
+    </ClCompile>
     <ClCompile Include="LagSwitchGuard.cpp">
       <Filter>Source Files</Filter>
     </ClCompile>
@@ -565,6 +568,9 @@
       <Filter>Header Files</Filter>
     </ClInclude>
     <ClInclude Include="RepairRateFix.h">
+      <Filter>Header Files</Filter>
+    </ClInclude>
+    <ClInclude Include="ReclaimAssist.h">
       <Filter>Header Files</Filter>
     </ClInclude>
     <ClInclude Include="tafstatusexporter.h">

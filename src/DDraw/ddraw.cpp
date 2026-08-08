@@ -42,6 +42,7 @@ using namespace std;
 #include "ExplosionCapsTelemetry.h"
 #include "ZeroDamageMapWeapons.h"
 #include "RepairRateFix.h"
+#include "ReclaimAssist.h"
 #ifdef TADR_DEBUG_PIPE
 #include "DebugPipeServer.h"
 #endif
@@ -230,6 +231,9 @@ bool APIENTRY DllMain(HINSTANCE hinst, unsigned long reason, void*)
 #if REPAIR_RATE_FIX_ENABLE
 		RepairRateFix::Install();
 #endif
+#if RECLAIM_ASSIST_ENABLE
+		ReclaimAssist::Install();
+#endif
 #ifdef TADR_DEBUG_PIPE
 		DebugPipeServer::Start();
 #endif
@@ -250,6 +254,9 @@ bool APIENTRY DllMain(HINSTANCE hinst, unsigned long reason, void*)
 #endif
 #if REPAIR_RATE_FIX_ENABLE
 		RepairRateFix::Shutdown();
+#endif
+#if RECLAIM_ASSIST_ENABLE
+		ReclaimAssist::Shutdown();
 #endif
 		/* KillTimer(NULL, Timer);
 		KillTimer(NULL, DetectTimer); */
