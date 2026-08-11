@@ -33,6 +33,10 @@
 //                    a bug fix; see "WHY OFF BY DEFAULT" below)
 //   The numbers:     the constexpr block below. Tuning guide with worked examples and
 //                    tables for every constant follows it.
+//   Full reference:  src/DDraw/RECLAIM_ASSIST_TUNING.md -- per-parameter deep dive, the
+//                    interaction map (which knobs affect which), tuning recipes, hard
+//                    constraints, and the multiplayer/determinism rules. Read that before
+//                    changing anything you are not already sure about.
 //   After editing either, rebuild:
 //     msbuild src/DDraw/ddraw.vcxproj /p:Configuration=ReleasePublic /p:Platform=x86 \
 //             /p:TDRAW_CONFIG=TDRAW_CONFIG_ESCALATION
