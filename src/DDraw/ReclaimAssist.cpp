@@ -202,7 +202,9 @@ bool IsVanillaSpeedUnit(int16_t unitId)
 // identical on every client by construction, not a pointer.
 struct Slot
 {
-    uint32_t key;         // packed root tile key (0 = empty slot)
+    uint32_t key;         // packed root tile key BIASED BY +1; a stored 0 means "empty slot".
+                          // The bias exists because map tile (0,0) packs to a legitimate 0 --
+                          // see the slotKey derivation in ComputeDecrement.
     uint16_t featDefIdx;  // feature-identity check -- see GetFeatureTypeFromOrder's contract
     uint16_t pad;
     int32_t  lastTick;
@@ -463,10 +465,19 @@ DecrementResult ComputeDecrement(UnitStruct* unit, void* order, const TileInfo& 
     Slot* slot = nullptr;
     int32_t cap = currentCounter;
     const bool ownerInRange = unit->cOwnerID < kMaxPlayers;
+    // Slot keys are stored BIASED BY +1 so that a stored 0 unambiguously means "empty".
+    // The packed tile key for map tile (0,0) is legitimately 0, and without the bias a
+    // feature sitting there would match a never-written slot whose key/featDefIdx/lastTick
+    // are all still zero: cap would come back 0, needsSeed would evaluate false (nothing
+    // differs from the zeroed slot), and the shared counter would go 0-D negative -- an
+    // instant, free reclaim. Narrow (it needs featDefIdx 0 and the first kAssistStale ticks
+    // after a table wipe) but reachable, so it is closed by construction here rather than
+    // argued away.
+    const uint32_t slotKey = tile.key + 1u;
     if (kAssistOn && !vanillaSpeed && taPtr && tile.valid && ownerInRange)
     {
         MaybeWipeTable(now);
-        slot = FindSlot(g_table[unit->cOwnerID], tile.key, tile.featDefIdx, now);
+        slot = FindSlot(g_table[unit->cOwnerID], slotKey, tile.featDefIdx, now);
         if (slot)
             cap = slot->counter;
     }
@@ -516,18 +527,18 @@ DecrementResult ComputeDecrement(UnitStruct* unit, void* order, const TileInfo& 
     {
         Slot* partition = g_table[unit->cOwnerID];
         if (!slot)
-            slot = ClaimSlot(partition, tile.key, now);
+            slot = ClaimSlot(partition, slotKey, now);
 
         if (slot)
         {
-            const bool needsSeed = (slot->key != tile.key)
+            const bool needsSeed = (slot->key != slotKey)
                                  || (slot->featDefIdx != tile.featDefIdx)
                                  || (now - slot->lastTick) > kAssistStale;
             if (needsSeed)
             {
                 // Freshly claimed, or reclaimed after expiring: seed from THIS order's own
                 // counter so a resumed reclaim keeps its progress (matches the CE reference).
-                slot->key        = tile.key;
+                slot->key        = slotKey;
                 slot->featDefIdx = tile.featDefIdx;
                 slot->counter    = currentCounter;
             }
