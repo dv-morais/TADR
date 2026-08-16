@@ -27,6 +27,8 @@ using namespace std;
 #include "StartPositions.h"
 #include "AutoTeam.h"
 #include "ChatBackdrop.h"
+#include "ChatPosition.h"
+#include "PlayerMute.h"
 #include "MultiplayerSchemaUnits.h"
 #include "UnitDefExtensions.h"
 #include "unitrotate.h"
@@ -199,6 +201,10 @@ bool APIENTRY DllMain(HINSTANCE hinst, unsigned long reason, void*)
 
 		StartPositions::GetInstance();
 		AutoTeam::Install();
+		// ChatPosition must go in before ChatBackdrop: the backdrop reads
+		// ChatPosition::X()/Y() to keep its box under the relocated text.
+		ChatPosition::Install();
+		PlayerMute::Install();
 		ChatBackdrop::Install();
 		MultiplayerSchemaUnits::GetInstance();
 		ExplosionCapsTelemetry::Install();
@@ -248,6 +254,8 @@ bool APIENTRY DllMain(HINSTANCE hinst, unsigned long reason, void*)
 #ifdef TADR_DEBUG_PIPE
 		DebugPipeServer::Stop();
 #endif
+		PlayerMute::Shutdown();
+		ChatPosition::Shutdown();
 		ReloadBars::Shutdown();
 		AlliedBuildQueueSync::Shutdown();
 		ZeroDamageMapWeapons::Shutdown();
