@@ -40,13 +40,17 @@ using namespace std;
 #include "AlliedBuildQueueSync.h"
 #include "VoteReject.h"
 #include "ShareGuard.h"
+#include "ShadingFix.h"
 #include "WeaponIdOverflow.h"
 #include "WeaponFiredExt.h"
 #include "ReloadBars.h"
+#include "UnitStatusCounters.h"
 #include "ExplosionCapsTelemetry.h"
 #include "ZeroDamageMapWeapons.h"
+#include "TeamColorNanolathe.h"
 #include "RepairRateFix.h"
 #include "ReclaimAssist.h"
+#include "TransportedExplosions.h"
 #ifdef TADR_DEBUG_PIPE
 #include "DebugPipeServer.h"
 #endif
@@ -220,6 +224,7 @@ bool APIENTRY DllMain(HINSTANCE hinst, unsigned long reason, void*)
 		AlliedBuildQueueSync::Install();
 		ChallengeResponse::GetInstance();
 		UnitDefExtensions::GetInstance();
+		TransportedExplosions::Install();
 		CUnitRotate::RegisterUnitDefKeys();
 		CBuildGhost::RegisterUnitDefKeys();
 		// Eager-construct so the DrawGameScreen inline hook is
@@ -228,8 +233,11 @@ bool APIENTRY DllMain(HINSTANCE hinst, unsigned long reason, void*)
 		VeterancyHack::GetInstance();
 		NotToAir::Install();
 		SurfaceFire::Install();
+		UnitStatusCounters::Install();
 		ReloadBars::Install();
+		ShadingFix::Install();
 		ZeroDamageMapWeapons::Install();
+		TeamColorNanolathe::Install();
 		VoteReject::Install();
 #if SHARE_ABUSE_GUARD
 		ShareGuard::Install();
@@ -257,8 +265,11 @@ bool APIENTRY DllMain(HINSTANCE hinst, unsigned long reason, void*)
 		PlayerMute::Shutdown();
 		ChatPosition::Shutdown();
 		ReloadBars::Shutdown();
+		UnitStatusCounters::Shutdown();
 		AlliedBuildQueueSync::Shutdown();
+		ShadingFix::Shutdown();
 		ZeroDamageMapWeapons::Shutdown();
+		TeamColorNanolathe::Shutdown();
 #if SHARE_ABUSE_GUARD
 		ShareGuard::Shutdown();
 #endif

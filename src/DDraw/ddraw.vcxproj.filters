@@ -28,6 +28,9 @@
     <ClCompile Include="AutoTeam.cpp">
       <Filter>Source Files</Filter>
     </ClCompile>
+    <ClCompile Include="UnitStatusCounters.cpp">
+      <Filter>Source Files</Filter>
+    </ClCompile>
     <ClCompile Include="BattleroomCommands.cpp">
       <Filter>Source Files</Filter>
     </ClCompile>
@@ -199,6 +202,9 @@
     <ClCompile Include="HmacSha256.cpp">
       <Filter>Source Files</Filter>
     </ClCompile>
+    <ClCompile Include="Md5.cpp">
+      <Filter>Source Files</Filter>
+    </ClCompile>
     <ClCompile Include="Widgets\Button.cpp">
       <Filter>Source Files</Filter>
     </ClCompile>
@@ -250,6 +256,9 @@
     <ClCompile Include="ChatFont.cpp">
       <Filter>Source Files</Filter>
     </ClCompile>
+    <ClCompile Include="ShadingFix.cpp">
+      <Filter>Source Files</Filter>
+    </ClCompile>
     <ClCompile Include="WeaponTdfHook.cpp">
       <Filter>Source Files</Filter>
     </ClCompile>
@@ -268,10 +277,16 @@
     <ClCompile Include="ZeroDamageMapWeapons.cpp">
       <Filter>Source Files</Filter>
     </ClCompile>
+    <ClCompile Include="TeamColorNanolathe.cpp">
+      <Filter>Source Files</Filter>
+    </ClCompile>
     <ClCompile Include="RepairRateFix.cpp">
       <Filter>Source Files</Filter>
     </ClCompile>
     <ClCompile Include="ReclaimAssist.cpp">
+      <Filter>Source Files</Filter>
+    </ClCompile>
+    <ClCompile Include="TransportedExplosions.cpp">
       <Filter>Source Files</Filter>
     </ClCompile>
     <ClCompile Include="LagSwitchGuard.cpp">
@@ -316,6 +331,9 @@
       <Filter>Header Files</Filter>
     </ClInclude>
     <ClInclude Include="HmacSha256.h">
+      <Filter>Header Files</Filter>
+    </ClInclude>
+    <ClInclude Include="Md5.h">
       <Filter>Header Files</Filter>
     </ClInclude>
     <ClInclude Include="MegamapControl.h">
@@ -540,10 +558,10 @@
     <ClInclude Include="config.h">
       <Filter>Header Files</Filter>
     </ClInclude>
-    <ClInclude Include="config_full.h">
+    <ClInclude Include="config_prota.h">
       <Filter>Header Files</Filter>
     </ClInclude>
-    <ClInclude Include="config_minimal.h">
+    <ClInclude Include="config_ota.h">
       <Filter>Header Files</Filter>
     </ClInclude>
     <ClInclude Include="config_bta.h">
@@ -552,10 +570,16 @@
     <ClInclude Include="PacketChatRouter.h">
       <Filter>Header Files</Filter>
     </ClInclude>
+    <ClInclude Include="ShadingFix.h">
+      <Filter>Header Files</Filter>
+    </ClInclude>
     <ClInclude Include="HudNotifications.h">
       <Filter>Header Files</Filter>
     </ClInclude>
     <ClInclude Include="ReloadBars.h">
+      <Filter>Header Files</Filter>
+    </ClInclude>
+    <ClInclude Include="UnitStatusCounters.h">
       <Filter>Header Files</Filter>
     </ClInclude>
     <ClInclude Include="AlliedBuildQueueSync.h">
@@ -591,10 +615,16 @@
     <ClInclude Include="ZeroDamageMapWeapons.h">
       <Filter>Header Files</Filter>
     </ClInclude>
+    <ClInclude Include="TeamColorNanolathe.h">
+      <Filter>Header Files</Filter>
+    </ClInclude>
     <ClInclude Include="RepairRateFix.h">
       <Filter>Header Files</Filter>
     </ClInclude>
     <ClInclude Include="ReclaimAssist.h">
+      <Filter>Header Files</Filter>
+    </ClInclude>
+    <ClInclude Include="TransportedExplosions.h">
       <Filter>Header Files</Filter>
     </ClInclude>
     <ClInclude Include="tafstatusexporter.h">
