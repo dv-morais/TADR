@@ -6,6 +6,27 @@
 #include "tamem.h"
 
 #include <cstring>
+#include <cstdio>
+#include <cstdarg>
+
+namespace {
+
+// The guard used to log nothing, so a frozen game left no trace of why -- which cost a
+// long investigation in Sep 2026 before it turned out the freeze was correct and the
+// fault was elsewhere. Two lines, only on transitions, is enough to answer "did the
+// guard fire, and for how long" from a user's tdrawlog.
+void LogLine(const char* fmt, ...)
+{
+	char buf[160];
+	va_list ap;
+	va_start(ap, fmt);
+	_vsnprintf(buf, sizeof(buf) - 1, fmt, ap);
+	va_end(ap);
+	buf[sizeof(buf) - 1] = 0;
+	IDDrawSurface::OutptTxt(buf);
+}
+
+} // namespace
 
 LagSwitchGuard* LagSwitchGuard::m_instance = nullptr;
 
@@ -205,6 +226,8 @@ void LagSwitchGuard::Tick()
 		m_frozen = true;
 		m_frozenSinceMs = now;
 		m_lastTickLeakMs = 0;  // allow first tick leak immediately
+		LogLine("[LagGuard] FREEZE silence=%lums remoteHumans=%d",
+			(unsigned long)silenceMs, remoteHumanCount);
 		m_hudLineId = HudNotifications::GetInstance()->AddLine(
 			"lagguard", "Network gap detected - simulation paused");
 	}
@@ -212,6 +235,7 @@ void LagSwitchGuard::Tick()
 	{
 		// Peers are back — unfreeze
 		DWORD frozenDuration = now - m_frozenSinceMs;
+		LogLine("[LagGuard] RESUME after %lums", (unsigned long)frozenDuration);
 		m_frozen = false;
 		m_frozenSinceMs = 0;
 		if (m_hudLineId)
