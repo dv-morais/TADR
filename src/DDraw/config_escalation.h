@@ -144,3 +144,9 @@
 // type on both layers, not just aircraft. Class B patch.
 #define GRID_CLAIM_TIEBREAK_ENABLE 1
 
+//
+// Percentage-based resource share thresholds -- see SharePercent.h and config.h for
+// the full description. Purely local per-client state; not a Class B patch, does not
+// require every player to run the same build.
+#define SHARE_PERCENT_ENABLE 1
+

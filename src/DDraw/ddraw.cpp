@@ -54,6 +54,7 @@ using namespace std;
 #include "TransportedExplosions.h"
 #include "AreaDamageOverflow.h"
 #include "GridClaimTieBreak.h"
+#include "SharePercent.h"
 #ifdef TADR_DEBUG_PIPE
 #include "DebugPipeServer.h"
 #endif
@@ -255,6 +256,9 @@ bool APIENTRY DllMain(HINSTANCE hinst, unsigned long reason, void*)
 #if SHARE_ABUSE_GUARD
 		ShareGuard::Install();
 #endif
+#if SHARE_PERCENT_ENABLE
+		SharePercent::Install();       // does not share a hook address with anything above; order-independent
+#endif
 #if TDRAW_EXTENDED_WEAPON_IDS
 		WeaponIdOverflow::Install();
 		WeaponFiredExt::Install();
@@ -283,6 +287,9 @@ bool APIENTRY DllMain(HINSTANCE hinst, unsigned long reason, void*)
 		TeamColorNanolathe::Shutdown();
 #if SHARE_ABUSE_GUARD
 		ShareGuard::Shutdown();
+#endif
+#if SHARE_PERCENT_ENABLE
+		SharePercent::Shutdown();
 #endif
 #if TDRAW_EXTENDED_WEAPON_IDS
 		WeaponFiredExt::Shutdown();
