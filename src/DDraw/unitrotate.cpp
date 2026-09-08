@@ -491,12 +491,24 @@ __declspec(naked) static void DrawBuildSpotQueueReturnThunk()
 static DWORD g_createFromNetworkRealReturn = 0;
 static BYTE* g_createFromNetworkSpawnRecord = nullptr;
 
+// Re-entrancy accounting -- OBSERVE ONLY, behaviour unchanged. Same single-save-slot shape as the
+// Order_MobileBuild envelope below and the same risk: re-entry overwrites both globals, so the
+// OUTER thunk jumps to the INNER caller and applies the WRONG spawn record. Added while chasing
+// the 2026-09-08 AV in UNITS_Send_UnitDeath_P0C, whose breadcrumb ring held a record naming slot
+// 38128 of a 15,000 slot array. Zero hits so far, which is itself evidence.
+static int      g_cfnDepth = 0;
+static unsigned g_cfnReentries = 0;
+
 // Receive-side: copy heading from the packet onto the freshly created unit.
 // Only acts on buildings (bmcode==0); for mobile units the engine already
 // sets heading=nBuildAngle, and applying jittered values from the packet
 // would change long-standing behaviour for unrotated mobile spawns.
 extern "C" void __cdecl ApplyHeadingFromSpawnRecord(BYTE* spawnRecord, BYTE* pUnit)
 {
+    // The thunk calls this exactly once per envelope, unconditionally, so decrementing here
+    // pairs with the entry increment even though the guards below return early.
+    if (g_cfnDepth > 0) --g_cfnDepth;
+
     if (!spawnRecord || !pUnit) return;
     WORD unitInfoId = *reinterpret_cast<WORD*>(pUnit + OFF_UNIT_UnitINFOID);
     if (unitInfoId == 0) return;
@@ -898,6 +910,28 @@ static int __stdcall SendNewUnitsP09_Entry_Proc(PInlineX86StackBuffer X86StrackB
 static int __stdcall CreateFromNetwork_Entry_Proc(PInlineX86StackBuffer X86StrackBuffer)
 {
     DWORD* stackTop = reinterpret_cast<DWORD*>(X86StrackBuffer->Esp);
+
+    // Report BEFORE clobbering, so the record shows exactly what is being lost. Note stackTop[0]
+    // is already &CreateFromNetworkReturnThunk on a re-entry -- the outer call installed it -- so
+    // a thunk address here is itself the signature of recursion.
+    if (g_cfnDepth > 0)
+    {
+        ++g_cfnReentries;
+        CrashTrace_RecordEvent(TRACE_CAT_CFNR,
+                               static_cast<DWORD>(g_cfnDepth),
+                               g_createFromNetworkRealReturn,
+                               reinterpret_cast<DWORD>(g_createFromNetworkSpawnRecord),
+                               stackTop[2]);
+        IDDrawSurface::OutptFmtTxt(
+            "[CUnitRotate] CreateFromNetwork RE-ENTERED depth=%d n=%u: outer ret=%08X record=%08X "
+            "being replaced by ret=%08X record=%08X",
+            g_cfnDepth, g_cfnReentries,
+            g_createFromNetworkRealReturn,
+            reinterpret_cast<DWORD>(g_createFromNetworkSpawnRecord),
+            stackTop[0], stackTop[2]);
+    }
+    ++g_cfnDepth;
+
     g_createFromNetworkSpawnRecord = reinterpret_cast<BYTE*>(stackTop[2]);  // arg2
     g_createFromNetworkRealReturn  = stackTop[0];
     stackTop[0] = reinterpret_cast<DWORD>(&CreateFromNetworkReturnThunk);

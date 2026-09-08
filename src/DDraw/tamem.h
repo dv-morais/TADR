@@ -174,8 +174,16 @@ struct PlayerStruct
 struct WeaponStruct {
   char WeaponName[0x20];
   char WeaponDescription[0x40];
-  int Unkn1;
-  char data3[0x14];
+  int Unkn1;                       // 0x60: Fire_CallBack
+  int pDamageArray;                // 0x64
+  // 0x68: the divisor in UNITS_FireProjectile_Ballistic @0049CE6A. It is ZERO
+  // for WeaponsTypedefArray[0], the "no weapon" entry that an unarmed unit's
+  // UnitWeapons[n].p_Weapon points at -- which is how a unit-identity
+  // divergence turns into an integer divide by zero. See UnitIdentity.cpp.
+  unsigned int weaponvelocity;     // 0x68
+  unsigned int startvelocity;      // 0x6C
+  unsigned int weaponacceleration; // 0x70
+  int ModelDebris;                 // 0x74
   GafAnimStruct *LandExplodeAsGFX;
   GafAnimStruct *WaterExplodeAsGFX;
   char data4[0x54];
@@ -1942,6 +1950,7 @@ static_assert(offsetof(SortGridBucket, pUnitListHead)         == 0x06,   "SortGr
 static_assert(sizeof(FeatureStruct)                           == 0x0D,   "map tile stride");
 static_assert(offsetof(FeatureStruct, airborneUnitNumber)     == 0x02,   "tile airborne slot");
 static_assert(sizeof(UnitStruct)                              == 0x118,  "UnitStruct stride");
+static_assert(sizeof(PlayerStruct)                            == 0x14B,  "PlayerStruct stride");
 static_assert(offsetof(UnitStruct, XPos__)                    == 0x6A,   "UnitStruct.Pos.x");
 static_assert(offsetof(UnitStruct, ZPos__)                    == 0x6E,   "UnitStruct.Pos.y (altitude)");
 static_assert(offsetof(UnitStruct, YPos__)                    == 0x72,   "UnitStruct.Pos.z (map depth)");
@@ -1958,7 +1967,17 @@ static_assert(offsetof(PlayerStruct, LOS_MEMORY_p)            == 0x7C,   "Player
 static_assert(offsetof(PlayerStruct, LOS_Tilewidth)           == 0x80,   "PlayerStruct LOS width");
 static_assert(offsetof(PlayerStruct, LOS_Tileheight)          == 0x84,   "PlayerStruct LOS height");
 static_assert(offsetof(UnitDefStruct, buildLimit)             == 0x15A,  "UNITINFO bbox anchor");
+static_assert(offsetof(WeaponStruct, weaponvelocity)          == 0x68,   "WeaponTypedef.weaponvelocity");
+static_assert(offsetof(WeaponStruct, LandExplodeAsGFX)        == 0x78,   "WeaponTypedef.LandExplodeAsGFX");
 static_assert(offsetof(WeaponStruct, AOE)                     == 0xD6,   "WeaponTypedef.areaofeffect");
+static_assert(offsetof(WeaponStruct, WeaponTypeMask)          == 0x111,  "WeaponTypedef.WeaponTypeMask");
+static_assert(sizeof(WeaponStruct)                            == 0x115,  "WeaponTypedef size changed");
+// UnitStruct weapon slots: bases unit+0x04/0x20/0x3C, stride 0x1C, so the
+// WeaponStruct* member of each sits 0x0C into the slot. UnitIdentity.cpp walks
+// them by that arithmetic, so pin it here.
+static_assert(offsetof(UnitStruct, Weapon1)                   == 0x10,   "UnitWeapons[0].p_Weapon");
+static_assert(offsetof(UnitStruct, Weapon2)                   == 0x2C,   "UnitWeapons[1].p_Weapon");
+static_assert(offsetof(UnitStruct, Weapon3)                   == 0x48,   "UnitWeapons[2].p_Weapon");
 static_assert(offsetof(WeaponStruct, EdgeEffectivnes)         == 0xD8,   "WeaponTypedef.edgeeffectiveness");
 static_assert(offsetof(TAdynmemStruct, NumProjectiles)        == 0x141F3, "PROJECTILES_ARRAY_Count");
 static_assert(offsetof(TAdynmemStruct, FeatureMapSizeX)       == 0x14233, "TNTMemStruct.TilesWidth");
