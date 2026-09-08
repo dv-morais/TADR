@@ -108,6 +108,21 @@
 #endif
 
 //
+// COB dispatch-table patch -- replaces the COB script VM's 28-node opcode-
+// dispatch compare ladder with a 256-entry jump table. Class A (bit-identical
+// output, purely faster); see ai-reference/simulation-performance/
+// COB_DISPATCH_PROJECT.md and CobDispatchTable.h for the full derivation.
+// Verified only against Escalation GOLD 10.1/10.2 -- the splice window, the
+// opcode map and every hardcoded address are specific to that exact binary,
+// so this must stay OFF (the safe default below) for every config besides
+// Escalation unless someone re-verifies it against that config's own exe.
+// Defaulted here so a config_*.h that doesn't mention it stays off.
+//
+#ifndef COB_DISPATCH_TABLE_ENABLE
+#define COB_DISPATCH_TABLE_ENABLE 0
+#endif
+
+//
 // Repair-rate fix heal multipliers -- see config_escalation.h for the tunable
 // values and RepairRateFix.cpp for how they're applied. Every config_*.h must
 // define both explicitly (same convention as REPAIR_RATE_FIX_ENABLE itself,

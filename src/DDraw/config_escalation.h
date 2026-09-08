@@ -81,6 +81,36 @@
 #define AIR_CORPSE_FALL_ENABLE 1
 
 //
+// COB script VM -- opcode dispatch
+//
+// Replaces the 28-node compare-ladder opcode dispatch with a 256-entry jump
+// table. Class A (bit-identical output, purely faster) -- see
+// ai-reference/simulation-performance/COB_DISPATCH_PROJECT.md. Independent
+// re-derivation of the opcode map and the splice-window signature has passed
+// (ai-reference/tools/exe/cob_dispatch.py --verify), and as of 2026-09-08 EDX
+// liveness is 57/57 proven -- the last handler (opcode 0x10045000 -> 0x4B16C4's
+// indirect call) was closed by resolving the vtable statically rather than by
+// walking the control flow, ENGINE_NOTES.md SS27.6. A 95-minute solo soak
+// (heavy late-game combat, the engine's own explosion-count cap hit twice) ran
+// clean: no crash, no reported anomaly. A second solo soak on this exact
+// rebased DLL was clean too, and an install-time self-check now confirms the
+// splice on every launch (one line in tdrawlog.txt, no Cheat Engine needed).
+//
+// ON as of 2026-09-08. The one test never run is a patched-only multiplayer
+// soak: deliberately skipped, not blocked. Be clear about what that does and
+// does not cost. It was never the correctness oracle -- with the same binary on
+// every peer, lockstep desync detects nondeterminism, not incorrectness, so a
+// mis-mapped opcode would make all peers wrong identically and silently. What
+// it WOULD have screened is crashes and gross anomalies under real network
+// timing, and that screen is simply absent. Read CobDispatchTable.h "STATUS"
+// and ENGINE_NOTES.md SS27.8 before changing this line.
+//
+// Escalation-only by construction: config.h defaults this to 0 everywhere else,
+// because the splice window and all 57 hardcoded addresses belong to Escalation
+// GOLD 10.1/10.2's TotalA.exe specifically.
+#define COB_DISPATCH_TABLE_ENABLE 1
+
+//
 // Extended weapon IDs (>= 256)
 //
 // Installs WeaponIdOverflow (heap-backed weapon slots above TA's hard-coded

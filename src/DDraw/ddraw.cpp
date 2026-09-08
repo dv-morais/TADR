@@ -51,6 +51,7 @@ using namespace std;
 #include "ZeroDamageMapWeapons.h"
 #include "TeamColorNanolathe.h"
 #include "RepairRateFix.h"
+#include "CobDispatchTable.h"
 #include "TransportedExplosions.h"
 #include "AreaDamageOverflow.h"
 #include "GridClaimTieBreak.h"
@@ -262,6 +263,9 @@ bool APIENTRY DllMain(HINSTANCE hinst, unsigned long reason, void*)
 #if REPAIR_RATE_FIX_ENABLE
 		RepairRateFix::Install();
 #endif
+#if COB_DISPATCH_TABLE_ENABLE
+		CobDispatchTable::Install();
+#endif
 #ifdef TADR_DEBUG_PIPE
 		DebugPipeServer::Start();
 #endif
@@ -290,6 +294,9 @@ bool APIENTRY DllMain(HINSTANCE hinst, unsigned long reason, void*)
 #endif
 #if REPAIR_RATE_FIX_ENABLE
 		RepairRateFix::Shutdown();
+#endif
+#if COB_DISPATCH_TABLE_ENABLE
+		CobDispatchTable::Shutdown();
 #endif
 		/* KillTimer(NULL, Timer);
 		KillTimer(NULL, DetectTimer); */
