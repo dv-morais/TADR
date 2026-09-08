@@ -116,7 +116,11 @@
 // opcode map and every hardcoded address are specific to that exact binary,
 // so this must stay OFF (the safe default below) for every config besides
 // Escalation unless someone re-verifies it against that config's own exe.
-// Defaulted here so a config_*.h that doesn't mention it stays off.
+// Every current config_*.h defines this explicitly now (0 everywhere but
+// Escalation), each with a pointer comment back here -- added 2026-09-08 so
+// the flag is discoverable by anyone editing one of those files directly,
+// not just inherited silently. This fallback exists only for a FUTURE
+// config_*.h that forgets to mention it; nothing currently relies on it.
 //
 #ifndef COB_DISPATCH_TABLE_ENABLE
 #define COB_DISPATCH_TABLE_ENABLE 0
