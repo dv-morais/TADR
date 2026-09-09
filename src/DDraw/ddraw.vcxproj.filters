@@ -295,6 +295,9 @@
     <ClCompile Include="GridClaimTieBreak.cpp">
       <Filter>Source Files</Filter>
     </ClCompile>
+    <ClCompile Include="SharePercent.cpp">
+      <Filter>Source Files</Filter>
+    </ClCompile>
     <ClCompile Include="LagSwitchGuard.cpp">
       <Filter>Source Files</Filter>
     </ClCompile>
@@ -634,6 +637,9 @@
       <Filter>Header Files</Filter>
     </ClInclude>
     <ClInclude Include="GridClaimTieBreak.h">
+      <Filter>Header Files</Filter>
+    </ClInclude>
+    <ClInclude Include="SharePercent.h">
       <Filter>Header Files</Filter>
     </ClInclude>
     <ClInclude Include="tafstatusexporter.h">

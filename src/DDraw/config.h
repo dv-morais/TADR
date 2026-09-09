@@ -199,3 +199,15 @@
     (REPAIR_RATE_FIX_REPAIR_MULTIPLIER != 1 || REPAIR_RATE_FIX_SELFHEAL_MULTIPLIER != 1)
 #error "REPAIR_RATE_FIX_REPAIR_MULTIPLIER / SELFHEAL_MULTIPLIER require REPAIR_RATE_FIX_ENABLE 1 -- they scale RepairRateFix's accumulator, which is not installed in this config."
 #endif
+
+//
+// SharePercent: accept a `%` suffix on +setsharemetal / +setshareenergy
+// (e.g. `+setshareenergy 50%`) so the share threshold tracks a percentage of
+// max storage instead of a fixed absolute that never adjusts as storage
+// grows. A plain integer keeps vanilla behaviour unchanged. Local per-client
+// state only -- cannot desync. Defaulted OFF; when 0, SharePercent.cpp
+// compiles to nothing.
+//
+#ifndef SHARE_PERCENT_ENABLE
+#define SHARE_PERCENT_ENABLE 0
+#endif
