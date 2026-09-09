@@ -2,56 +2,34 @@
 
 // Per-player, local-only mute for chat, map pings and whiteboard drawings.
 //
-// WHY THIS IS DESYNC-SAFE
-// -----------------------
-// Nothing here touches simulation state. Two clients with different mute
-// settings compute byte-identical simulation state. Specifically:
+// Desync-safe: nothing here touches simulation state.
+//   * The chat filter cancels Net_PushChatHudMessage @0x463CA0 (writes the HUD
+//     ring and plays a UI sound; the packet is already processed by then).
+//   * The whiteboard filter drops overlay elements on TADR's recorder channel
+//     (0xFB), which no client simulates.
+//   * `.mute` is cancelled at Chat_FormatAndSend @0x463E50 -- upstream of
+//     formatting, of Chat_SendOutgoingMessage @0x453360, and of the local echo
+//     that follows. (Hooking 0x453360 directly does not work: it only sees the
+//     already-formatted string and its echo fires regardless -- see .cpp.)
 //
-//   * The chat filter cancels Net_PushChatHudMessage @0x463CA0, which only
-//     writes the HUD ring and plays a UI sound. The packet has already been
-//     received and processed by the time it is reached.
-//   * The whiteboard filter drops overlay elements delivered on TADR's
-//     recorder-to-recorder channel (0xFB), which no client simulates.
-//   * The `.mute` command is cancelled at Chat_FormatAndSend @0x463E50 —
-//     upstream of formatting, of Chat_SendOutgoingMessage @0x453360 (and
-//     therefore Net_BroadcastGuaranteed), AND of the unconditional local-echo
-//     call to Net_PushChatHudMessage that follows it. See PlayerMute.cpp for
-//     why the first implementation (hooking 0x453360 directly) didn't work:
-//     that site only ever sees the already-formatted "<Name> text" string,
-//     and its local echo does not depend on the send succeeding.
+// Never muted, deliberately: playerIndex 10 (system sentinel -- unit alerts,
+// TADR notices, self-chat); channel 4 (eliminations/leaves); channel 1 with a
+// non-zero alert payload (unit alerts -- the alert camera walks the ring and
+// reads entry+0x44); non-chat channel-8 lines (pause/ready).
 //
-// WHAT IS NEVER MUTED (deliberate)
-// --------------------------------
-//   * playerIndex 10 — the system sentinel. Unit alerts ("Rocko: Under
-//     Attack"), TADR's own local messages and self-typed chat all carry 10.
-//   * Channel 4 — eliminations and leaves ("X has been eradicated"). You
-//     need to know a player died even if you muted them.
-//   * Channel 1 with a non-zero alert payload — unit alerts. The alert
-//     camera (Camera_CenterOnNextChatAlertUnit @0x463F60) walks the ring
-//     and reads entry+0x44; suppressing these would break jump-to-alert.
-//   * Non-chat channel-8 lines ("X paused the game", "*** X ready"). Those
-//     share channel 8 with chat but are game state you must still see.
+// Channel facts:
+//   chan 8, text '<...'  -> player chat         (mutable: Chat)
+//   chan 8, other        -> pause/ready         (never)
+//   chan 1, alert == 0   -> marker/ping echo    (mutable: Pings)
+//   chan 1, alert != 0   -> unit alert          (never)
+//   chan 4               -> elimination/leave   (never)
+//   chan 2               -> never seen live     (never)
 //
-// CHANNEL FACTS (verified from live replay ring dumps, 2026-08-14)
-// ---------------------------------------------------------------
-//   chan 8, text starts '<'  -> player chat            (mutable: Chat)
-//   chan 8, other            -> pause/ready notices    (never muted)
-//   chan 1, alert == 0       -> marker/ping echo       (mutable: Pings)
-//   chan 1, alert != 0       -> unit alert, slot 10    (never muted)
-//   chan 4                   -> elimination / leave    (never muted)
-//   chan 2                   -> never observed live; treated as never muted
-//
-// KNOWN LIMITS (tell the player, do not pretend otherwise)
-// -------------------------------------------------------
-//   * Drawing DELETES cannot be attributed. PacketDeleteOn / PacketDeleteArea
-//     carry no colour byte, so a muted player can still erase your drawings.
-//     Fixing that needs a whiteboard wire-format change.
-//   * Whiteboard sender identity is a COLOUR heuristic, not a player id.
-//     A player who changes colour mid-game can leak markers past a mute.
-//     This is inherited from the existing whiteboard code, not introduced here.
-//   * Mutes are session-scoped and keyed by slot. They are cleared
-//     automatically when the set of players in the game changes, because a
-//     slot number means a different person in the next game.
+// Known limits: drawing DELETEs carry no colour byte, so a muted player can
+// still erase your drawings; whiteboard sender identity is a colour heuristic,
+// so a mid-game colour change leaks past a mute (both inherited from the
+// existing whiteboard code). Mutes are session-scoped, keyed by slot, and
+// cleared automatically when the player set changes.
 
 struct PlayerStruct;
 

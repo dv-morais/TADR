@@ -810,12 +810,9 @@ bool CTAHook::Message(HWND WinProcWnd, UINT Msg, WPARAM wParam, LPARAM lParam)
 				}
 				break;
 			case WM_MOUSEWHEEL:
-				// Stage 4c-b step 3: while the chat scrollback is armed (the
-				// TALK.GUI compose prompt is open), the wheel pages retained
-				// chat history instead of doing anything else with it -- takes
-				// priority over WheelZoom / WheelMoveMegaMap / the
-				// SnapOverrideKey build-rotate gesture below, and is a no-op
-				// (returns false immediately) whenever the prompt is closed.
+				// While chat scrollback is armed (compose prompt open) the
+				// wheel pages history, ahead of WheelZoom / WheelMoveMegaMap /
+				// the build-rotate gesture below. No-op when the prompt is closed.
 				if (ChatLayout::ScrollbackWheel((short)HIWORD(wParam)))
 					return true;
 

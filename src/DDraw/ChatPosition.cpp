@@ -22,9 +22,8 @@ namespace
 	const int VANILLA_X = 138;   // 0x8A
 	const int VANILLA_Y = 52;    // 0x34
 
-	// HUD frame margins. The engine draws the game viewport inside a fixed
-	// 128px left sidebar and 32px top/bottom bars, with no scaling
-	// (ENGINE_NOTES.md §26.8).
+	// HUD frame margins: a fixed 128px left sidebar and 32px top/bottom bars,
+	// no scaling.
 	const int HUD_LEFT   = 128;
 	const int HUD_TOP    = 32;
 	const int HUD_BOTTOM = 32;
@@ -46,11 +45,10 @@ namespace
 	bool  g_offsetXPct  = false;   // g_offsetX is a % of screen width, not pixels
 	bool  g_offsetYPct  = false;   // g_offsetY is a % of screen height, not pixels
 
-	// Lines the bottomcenter anchor keeps clear ABOVE the bottom HUD bar. The
-	// engine draws the message list top-down from the anchor, so a point near
-	// the bottom bar puts everything after the first line or two off-screen.
-	// Reserving this many lines' height is the stopgap; drawing the list
-	// upward from the bottom is Stage 4. Overridable via ChatBottomLines.
+	// Lines the bottomcenter anchor keeps clear above the bottom HUD bar. The
+	// engine draws the list top-down from the anchor, so anchoring at the bar
+	// pushes everything past the first line or two off-screen; reserving this
+	// many lines' height is the workaround. Overridable via ChatBottomLines.
 	int   g_bottomLines = 8;
 
 	// Last values actually written, so EnsureApplied() can early-out.
@@ -61,7 +59,7 @@ namespace
 	// bottomcenter anchor (see EnsureApplied). Shutdown restores 30.
 	int   g_appliedTextlines = 0;
 
-	const unsigned OFF_TEXTLINES = 0x37F27;   // ta+0x37F27, dword (ENGINE_NOTES SS26.4)
+	const unsigned OFF_TEXTLINES = 0x37F27;   // ta+0x37F27, dword
 
 	// Original bytes, captured before the first write.
 	DWORD  g_origYImm   = 0;
@@ -156,10 +154,9 @@ namespace
 		return AnchorNone;
 	}
 
-	// Reads "138", "-110", "12%", "-8 %" (a trailing ';' and surrounding
-	// spaces are tolerated, matching the shipped ini style). "<n>%" sets
-	// *isPct and *val = n, meaning n percent of the screen dimension, resolved
-	// per frame. Otherwise *val is a pixel offset. Unparseable -> 0 pixels.
+	// "138" / "-110" -> pixel offset; "12%" / "-8 %" -> percent of the screen
+	// dimension, resolved per frame. Trailing ';' and spaces tolerated.
+	// Unparseable -> 0.
 	void ParseOffset(const char* s, int* val, bool* isPct)
 	{
 		*val   = 0;
@@ -217,21 +214,9 @@ namespace
 			const int lh = (LineHeight() > 0 ? LineHeight() : 14);
 			x = HUD_LEFT + (w - HUD_LEFT) / 2;
 			if (g_growUp)
-			{
-				// ChatLayout draws the list UPWARD from this point (the newest
-				// line sits here), so anchor one line above the bottom bar and
-				// let older lines climb. ChatPosY still nudges UP only.
-				y = h - HUD_BOTTOM - lh;
-			}
+				y = h - HUD_BOTTOM - lh;                      // list climbs from one line above the bar
 			else
-			{
-				// Drawn DOWNWARD from this point. Anchoring at the bottom bar
-				// puts everything past the first line or two off-screen (the
-				// "can't see messages after a while" bug). Reserve g_bottomLines
-				// lines' height above the bar and anchor there; ChatPosY nudges
-				// from that reserved position, UP only.
-				y = h - HUD_BOTTOM - lh * g_bottomLines;
-			}
+				y = h - HUD_BOTTOM - lh * g_bottomLines;      // reserve g_bottomLines above the bar, list descends
 			maxY = y;
 			break;
 		}
@@ -377,28 +362,17 @@ void ChatPosition::EnsureApplied()
 	if (!g_patched || x != g_appliedX || y != g_appliedY)
 		WritePosition(x, y);
 
-	// bottomcenter only: cap the engine's line count.
+	// bottomcenter only: cap the engine's line count. Hud_DrawChatHudRing
+	// draws downward from the anchor up to `textlines` lines, so with a bottom
+	// anchor and the stock textlines=30 the newest lines fall past the bottom
+	// edge. Writing `textlines` normally ratchets `chatNum` one way and eats
+	// history, but this is a deliberately small fixed window (like the ctrl-F2
+	// "chat lines" option), not a collapsible one, so the ratchet costs
+	// nothing visible here. Restored to 30 by Shutdown().
 	//
-	// Hud_DrawChatHudRing draws the visible window DOWNWARD from the anchor,
-	// oldest line at the anchor and newest `(count-1)*charHeight` below it, up
-	// to `textlines` lines. With a bottom anchor and the stock textlines=30 the
-	// newest messages are drawn past the bottom edge and are never seen -- the
-	// "can't see new messages after a while" bug.
-	//
-	// ENGINE_NOTES SS26.4 says never write `textlines`, because a feature that
-	// holds it low and expects a later "show more" to recover the scrolled-off
-	// lines cannot -- chatNum ratchets one way. That caveat does NOT apply
-	// here: this is a deliberately small, fixed chat window (identical to the
-	// ctrl-F2 "chat lines" option), not a collapsible one. Stage 4's
-	// scroll-back keeps its own message buffer fed from the 0x463CA0 writer and
-	// does not consult chatNum, so the ratchet costs nothing we can otherwise
-	// see. Restored to 30 by Shutdown().
-	//
-	// ...UNLESS ChatLayout has taken over the draw (ChatRenderer=tadr). It then
-	// walks the full 30-entry ring itself and applies its own per-column
-	// ChatLines / ChatSysLines budget with a screen-fit clamp, so the "drawn
-	// off the bottom edge" bug cannot occur. Throttling `textlines` here would
-	// only hide older lines from that drawer for nothing -- leave it at 30.
+	// Skipped entirely when ChatLayout owns the draw: it walks the full ring
+	// and clamps per column itself, so throttling `textlines` would only hide
+	// history from it.
 	if (g_anchor == AnchorBottomCenter && !ChatLayout::TakingOver())
 	{
 		unsigned char* ta = TaBase();
@@ -417,10 +391,9 @@ void ChatPosition::EnsureApplied()
 
 void ChatPosition::SetGrowUp(bool growUp)
 {
-	// ChatLayout calls this at Install() (after ours) when ChatRenderer=tadr
-	// and ChatGrow=up. Only affects the bottomcenter anchor: the list is drawn
-	// upward, so the anchor moves from the top of the reserved band to one
-	// line above the bottom bar. EnsureApplied() re-resolves on the next frame.
+	// ChatLayout calls this when ChatRenderer=tadr and ChatGrow=up. Only the
+	// bottomcenter anchor cares: the list draws upward, so the anchor moves to
+	// one line above the bottom bar. EnsureApplied() re-resolves next frame.
 	if (g_growUp == growUp)
 		return;
 	g_growUp = growUp;

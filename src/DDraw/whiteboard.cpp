@@ -816,10 +816,9 @@ void AlliesWhiteboard::ReceiveMarkers()
 			PtC *ptc = (PtC*)Data;
 			Data += sizeof(PtC);
 
-			// Muting pings drops the marker, its minimap flash AND its chat
-			// echo together — the "*Name added a new marker" line belongs to
-			// the ping, not to the sender's chat. Data has already been
-			// advanced above, so the walk stays in step either way.
+			// Muting pings drops the marker, its minimap flash and its chat
+			// echo together. Data is already advanced, so the walk stays in
+			// step whether or not the element is added.
 			if (!IsSenderMuted(ptc->Color, PlayerMute::CatPings))
 			{
 				ElementHandler.AddElement(new GraphicText(ptc->x, ptc->y, Data, ptc->Color));

@@ -18,46 +18,21 @@
 #include <cstdlib>
 #include <cstdio>
 
-// ---------------------------------------------------------------------------
-// Stage 4b -- TADR owns Hud_DrawChatHudRing @0x00464060.
+// TADR owns Hud_DrawChatHudRing @0x00464060 -- int __stdcall(OFFSCREEN*),
+// ret 4. First 5 bytes are `sub esp,0x20 / push ebx / push ebp` (3 whole
+// instructions), safe for a lagger-jmp to replay or to cancel. The caller
+// pushes the OFFSCREEN* and does no post-call cleanup, so at the hook
+// [Esp] = return addr and [Esp+4] = OFFSCREEN*.
 //
-// Verified against TotalA.exe (SHA-matched to the shipped game), and against
-// the Stage 4a dry run (tdrawlog: [ChatLayout] PLAN == [ChatEngine] DRAW,
-// every x / y / hash, 7 lines, wrap included, 23k frames, zero guard trips):
-//
-//   * 0x464060 = int __stdcall(OFFSCREEN*), `ret 4`. Prologue 83 ec 20 53 55
-//     = `sub esp,0x20 / push ebx / push ebp` -- 3 whole instructions in the
-//     first 5 bytes, safe for a lagger-jmp to replay OR to cancel.
-//   * caller 0x469FCB pushes the OFFSCREEN* and does no cleanup after the
-//     call -> at the hooked instruction [Esp]=return addr, [Esp+4]=OFFSCREEN*.
-//   * ring walk: idx = freeIndex(word @+0x2A3E); step back up to textlines-1
-//     entries (int @+0x37F27), stop at chatNum(word @+0x2A40); then forward
-//     to freeIndex, drawing each visible line.
-//   * visibility (mode int @+0x37EFE, screenchat int @+0x37F02, channel =
-//     entry[0x47]&0x0F): 1 -> channel==2; 2 -> channel!=8; 3 -> screenchat!=0
-//     || channel in {1,4,8}; else invisible (jump table @0x464270 decoded).
-//   * line height h = COMIX FontDataStruct byte 0 (*(u8*)*(ta+0x391F9)); the
-//     engine gets it via Font_SetCurrent(that)/Font_GetLineHeight(), we read
-//     the byte directly (proven equal in 4a: h=14).
-//   * per line, engine order: Font_SetColors(0xFE, remap) where remap =
-//     (entry[0x47]&0x20) ? ta[0xDD5] : ta[0xDDA]; if entry[0x46] != 10 a logo:
-//     scaledH = ftol(0.8*h); RECT{colX, y, colX+scaledH, y+scaledH};
-//     DrawPlayerLogo(off, &Players[slot], &RECT, 0) @0x467C00; and the line's
-//     text X = ftol(colX + 1.5*scaledH). No logo -> text X = colX.
-//   * text: DrawColorTextInScreen(off, entry, textX, y, -1, 0) @0x4A50E0.
-//   * Y advances by h per visible line, from ChatPosition::Y().
-//
-// FAIL-SAFE: the router captures the return address, then does everything
-// inside SEH. On ANY fault or unresolved pointer it `return 0`s -- the engine
-// then draws normally. It can never blank the chat; the worst case is a
-// double-drawn frame.
-// ---------------------------------------------------------------------------
+// Fail-safe: the router captures the return address, then runs everything
+// under SEH. Any fault or unresolved pointer -> return 0 and the engine draws
+// normally. Worst case is a double-drawn frame; the chat can never blank.
 
 namespace
 {
 	const unsigned CHAT_DRAW_ADDR = 0x00464060;
 
-	// Ring layout -- identical to ChatBackdrop.cpp / the disassembly.
+	// Ring layout (same offsets as ChatBackdrop.cpp).
 	const unsigned OFF_CHAT_TEXT     = 0x12EF;
 	const unsigned CHAT_ENTRY_STRIDE = 0x48;
 	const int      CHAT_ENTRY_COUNT  = 30;
@@ -76,11 +51,10 @@ namespace
 	const unsigned OFF_REMAP_NORMAL    = 0xDDA;
 	const unsigned OFF_REMAP_HIGHLIGHT = 0xDD5;
 
-	// Active GUI panel chain -- ta->desktopGUI.TheActive_GUIMEM, walked by
-	// per_active (see unitrotate.cpp / tamem.h _GUIInfo, _GUIMEMSTRUCT).
-	// Step 2 arms scrollback while the chat-entry panel is in this chain; no
-	// hook, no "chat closed" signal needed (ENGINE_NOTES 26.6) -- a panel that
-	// closed is simply not in the chain next frame.
+	// Active GUI panel chain (ta->desktopGUI.TheActive_GUIMEM, walked by
+	// per_active -- same mechanism as unitrotate.cpp). Scrollback arms while
+	// the chat-entry panel is in this chain; a closed panel is simply absent
+	// next frame, so no "chat closed" signal is needed.
 	const unsigned OFF_ACTIVE_GUIMEM   = 0x0519 + 0x18; // _GUIInfo.TheActive_GUIMEM
 	const unsigned OFF_GUIMEM_PERACTIVE = 0x00;
 	const unsigned OFF_GUIMEM_NAME      = 0x41;         // char GUIName[16]
@@ -97,13 +71,10 @@ namespace
 	const int PAD_X_RIGHT = 4;
 	const int PAD_Y       = 1;
 
-	// TAPalette index 0 is pure black (verified fact, already relied on by
-	// ChatBackdrop.cpp's backdrop fill) -- the outline colour for ChatFontOutline.
+	// TAPalette[0] is pure black; the ChatFontOutline colour.
 	const int TA_BLACK_INDEX = 0;
 
-	// Engine functions this drawer calls. Signatures from the disassembly;
-	// none are bound elsewhere in the codebase (DrawColorTextInScreen is, via
-	// tafunctions.h).
+	// Engine functions this drawer calls (signatures from the disassembly).
 	typedef void (__stdcall* Fn_FontSetCurrent)(void* fontDataStruct);  // 0x4C1420, ret 4
 	typedef void (__stdcall* Fn_FontSetColors)(int a, int b);           // 0x4C13A0, ret 8
 	typedef void (__stdcall* Fn_DrawPlayerLogo)(void* off, void* player, RECT* r, int flag); // 0x467C00, ret 0x10
@@ -115,58 +86,40 @@ namespace
 
 	Renderer          g_renderer  = R_Engine;
 	bool              g_split     = false;
-	bool              g_growUp    = false;   // ChatGrow: false=down (oldest on anchor), true=up (newest on anchor)
+	bool              g_growUp    = false;   // ChatGrow: false = down (oldest on anchor), true = up (newest on anchor)
 	unsigned          g_sysGroups = CHATGROUPS_DEFAULT_SYS;
-	int               g_plrLines  = 0;       // ChatLines:    0 = auto-fit to screen, >0 = that many NEWEST player-column lines
-	int               g_sysLines  = 0;       // ChatSysLines: 0 = auto-fit to screen, >0 = that many NEWEST system-column lines
-	int               g_fontSize  = 0;       // ChatFontSize: 0 = engine's native bitmap font, >0 = ChatFont TTF atlas at that pixel height (both columns)
-	bool              g_fontColorSet   = false; // ChatFontColor given and parsed OK -- overrides the per-line player-colour remap for ChatFont-drawn text
-	int               g_fontColorIndex = 0;     // nearest TAPalette[] index to the requested RGB (resolved once at Install(); see NearestPaletteIndex)
-	bool              g_fontOutline    = false; // ChatFontOutline: draw an 8-direction 1px black outline behind ChatFont text (legibility over any background)
+	int               g_plrLines  = 0;       // ChatLines:    0 = auto-fit, >0 = that many newest player-column lines
+	int               g_sysLines  = 0;       // ChatSysLines: 0 = auto-fit, >0 = that many newest system-column lines
+	int               g_fontSize  = 0;       // ChatFontSize:  0 = native bitmap font, >0 = ChatFont TTF atlas at that pixel height
+	bool              g_fontColorSet   = false;
+	int               g_fontColorIndex = 0;  // nearest TAPalette[] index to ChatFontColor's RGB, resolved once at Install()
+	bool              g_fontOutline    = false;
 	bool              g_active    = false;
 	InlineSingleHook* g_hook      = nullptr;
 	unsigned          g_frames    = 0;
 
-	// -----------------------------------------------------------------------
-	// Stage 4c-b (step 1): retained chat history.
+	// Retained chat history: the engine ring holds only 30 entries, so every
+	// line it gains is copied here (oldest evicted past HIST_CAP) for
+	// scrollback. Fed once per frame from WalkChat via HistoryConsume(), which
+	// diffs the ring freeIndex against the last one it saw and appends the
+	// slots written since (freeIndex advances by 1 per line, wraps at 30). The
+	// first call seeds from the visible ring so a mid-game start is not blank.
+	// Entries are byte-identical to ring entries (0x48 stride).
 	//
-	// The engine ring is only 30 entries. To scroll back further we keep our
-	// own copy: every line the ring gains is appended here, oldest evicted
-	// once we pass HIST_CAP. This step is PASSIVE -- the buffer is filled and
-	// (instrumented builds) dumped, but nothing is drawn from it yet. It is a
-	// pure read of memory the engine already owns into a TADR-owned array, so
-	// it cannot affect simulation or the picture.
-	//
-	// Feed: once per tadr frame WalkChat calls HistoryConsume(), which diffs
-	// the ring's freeIndex against the last one it saw and appends whatever
-	// slots were written in between (the ring advances freeIndex by exactly 1
-	// per line, wrapping at 30 -- verified via the mutetest head_before/after
-	// fields). The first call seeds from the currently-visible ring so a
-	// mid-game start is not blank. Entries are stored byte-identical to ring
-	// entries (0x48 stride) so ChatClassify and the draw path will accept
-	// them unchanged when step 2 renders from here.
-	//
-	// PER-MATCH, not per-process. Scrollback is for looking back within the
-	// current match; carrying chat across matches is explicitly not wanted.
-	// HistoryConsume() watches ta->GameTime and drops the buffer when the clock
-	// goes backwards (new match, or replay rewind) -- the same new-game signal
-	// AreaDamageOverflow and ShareGuard already use. The engine chat ring is
-	// NOT cleared between games (ENGINE_NOTES 26, "ring is not cleared between
-	// games"), so the reset must NOT re-seed from the ring -- it resyncs delta
-	// tracking to the current freeIndex and lets the fresh match fill in.
+	// Per-match, not per-process: when ta->GameTime goes backwards (new match
+	// or replay rewind) the buffer is dropped. The ring is not cleared between
+	// matches, so the reset must NOT re-seed from it -- it just resyncs the
+	// delta to the current freeIndex.
 	const int      HIST_CAP = 512;
 	unsigned char  g_hist[HIST_CAP][CHAT_ENTRY_STRIDE];
-	unsigned       g_histCount        = 0;     // lines appended in the current match (monotonic within a match)
+	unsigned       g_histCount        = 0;    // lines appended in the current match
 	bool           g_histSeeded       = false;
-	int            g_histLastFree     = 0;     // ring freeIndex at the last consume
-	int            g_histLastGameTime = -1;    // ta->GameTime at the last consume; -1 = never seen
-	bool           g_histFrozen       = false; // FreezeHistory()/ThawHistory() -- suite bracket (always false in a stripped build)
+	int            g_histLastFree     = 0;    // ring freeIndex at the last consume
+	int            g_histLastGameTime = -1;   // ta->GameTime at the last consume; -1 = never seen
 
-	// Stage 4c-b step 2: scrollback. While the chat compose prompt is open
-	// (TALK.GUI in the active GUI chain) the player column is drawn from the
-	// retained history at g_sbOffset (0 = live tail) instead of the live ring.
-	// The system column stays live. g_sbOffset is moved by the wheel in step 3;
-	// it resets to 0 whenever the prompt is not open.
+	// While the chat compose prompt is open (TALK.GUI in the active GUI chain)
+	// the player column is drawn from the retained history at g_sbOffset
+	// (0 = live tail) instead of the live ring; the system column stays live.
 	bool           g_sbArmed  = false;
 	int            g_sbOffset = 0;
 	int            g_sbPick[HIST_CAP];        // history indices of the player-column lines, newest-first
@@ -184,17 +137,15 @@ namespace
 		if (freeIndex < 0 || freeIndex >= CHAT_ENTRY_COUNT)
 			return;
 
-		// New match / replay rewind: the engine game clock has gone backwards.
-		// Drop the previous match's history. The engine ring is NOT cleared
-		// between games, so do NOT re-seed from it -- mark seeded, point delta
-		// tracking at the current freeIndex, and let real new lines fill in.
+		// New match / replay rewind: game clock went backwards. Drop the old
+		// history; do NOT re-seed (the ring is not cleared between matches) --
+		// just resync the delta to the current freeIndex.
 		const int gameTime = *(int*)(ta + OFF_GAME_TIME);
 		if (gameTime < g_histLastGameTime)
 		{
 			g_histCount    = 0;
 			g_histSeeded   = true;
 			g_histLastFree = freeIndex;
-			g_histFrozen   = false;
 		}
 		g_histLastGameTime = gameTime;
 
@@ -207,21 +158,13 @@ namespace
 			return;
 		}
 
-		// Frozen (a .mutetest run is churning the ring): stay in sync but
-		// append nothing. ThawHistory() jumps g_histLastFree past the batch.
-		if (g_histFrozen)
-			return;
-
 		if (freeIndex == g_histLastFree)
 			return;
 
-		// Both indices are in [0,30) (WalkChat guards freeIndex before the
-		// call), so this mod-30 gap is always 1..29 -- it cannot distinguish
-		// "advanced 3" from "advanced 33". The distinction does not matter:
-		// every ring slot always holds one of the last 30 real lines, so a
-		// pathological multi-wrap frame (>=30 lines at once -- not reachable
-		// at frame rate) would append real recent content, at worst repeating
-		// a line. It never appends stale/garbage bytes.
+		// freeIndex advances by 1 per line and both indices are in [0,30), so
+		// this walk always appends real recent lines -- at worst it repeats one
+		// on a (frame-rate-unreachable) >=30-lines-in-one-frame burst, never
+		// garbage.
 		const int oldFree = g_histLastFree;
 
 		for (int j = oldFree; j != freeIndex; j = (j + 1) % CHAT_ENTRY_COUNT)
@@ -251,7 +194,7 @@ namespace
 		__except (EXCEPTION_EXECUTE_HANDLER) { return false; }
 	}
 
-	// Engine's per-line visibility test -- jump table @0x464270 decoded.
+	// Engine's per-line visibility test (jump table @0x464270).
 	bool ChatLineVisible(int mode, int screenchat, int channel)
 	{
 		switch (mode)
@@ -285,9 +228,8 @@ namespace
 		return R_Engine;
 	}
 
-	// "unit,cmd,event,notice,other" -> bitmask of ChatKindBit(). Unknown
-	// tokens are ignored (and, in instrumented builds, named once). An empty
-	// / absent value keeps the default system set.
+	// Comma/space list of kind names -> ChatSysGroups bitmask. Unknown tokens
+	// are ignored; an empty/absent value keeps the default system set.
 	unsigned ParseSysGroups(const char* s)
 	{
 		if (!s || !*s)
@@ -322,10 +264,9 @@ namespace
 		return any ? mask : CHATGROUPS_DEFAULT_SYS;
 	}
 
-	// TA/Escalation's fixed 256-colour palette (PCX.CPP) -- the same table
-	// UnitIcon.cpp already relies on to convert an arbitrary RGB bitmap into
-	// legitimate indices for this game's real palette. Reused here rather
-	// than guessed at: nearest-match search by squared RGB distance.
+	// Nearest entry in TA's fixed 256-colour palette (PCX.CPP's TAPalette[],
+	// the same table UnitIcon.cpp uses for arbitrary-RGB -> palette). Squared
+	// RGB distance.
 	int NearestPaletteIndex(int r, int g, int b)
 	{
 		int  best     = 0;
@@ -345,10 +286,8 @@ namespace
 		return best;
 	}
 
-	// "RRGGBB" or "#RRGGBB" -> nearest TAPalette index in *outIndex. Empty or
-	// malformed input (including the ini's absent-key default of "") -> false,
-	// unchanged: ChatFontColor is off and ChatFont text keeps the per-line
-	// player-colour remap it has always used.
+	// "RRGGBB" / "#RRGGBB" -> nearest palette index. Empty or malformed
+	// (including the ini default "") -> false: ChatFontColor stays off.
 	bool ParseHexColor(const char* s, int& outIndex)
 	{
 		if (!s || !*s)
@@ -380,12 +319,10 @@ namespace
 		return nullptr;
 	}
 
-	// True while the in-game chat compose prompt is open -- i.e. the TALK.GUI
-	// panel is somewhere in the engine's active GUI chain
-	// (ta->desktopGUI.TheActive_GUIMEM, walked by per_active). Purely a read:
-	// a closed panel is simply gone from the chain next frame, which is why
-	// this needs no "chat closed" hook (ENGINE_NOTES 26.6). SEH-guarded; any
-	// fault -> not armed -> live ring.
+	// True while the chat compose prompt is open, i.e. the TALK.GUI panel is
+	// in the engine's active GUI chain. Read-only; a closed panel is just gone
+	// from the chain next frame, so no close hook is needed. SEH-guarded, any
+	// fault -> not armed.
 	bool ChatPromptOpen(unsigned char* ta)
 	{
 		__try
@@ -404,16 +341,10 @@ namespace
 		return false;
 	}
 
-	// ChatFontColor / ChatFontOutline -- applied only to ChatFont-drawn text;
-	// the native engine font branch is untouched, exactly as before either
-	// feature existed. `remapColor` is the per-line player-colour index
-	// (ta[OFF_REMAP_NORMAL]/HIGHLIGHT]) that ChatFont text has always used;
-	// ChatFontColor, when set, replaces it uniformly (every ChatFont line,
-	// highlighted or not, draws in the one configured colour). The outline is
-	// 8 one-pixel offset copies in solid black drawn first, so the glyph
-	// reads over any background the game happens to be showing underneath --
-	// the reason it's asked for at all is that a single flat colour can
-	// disappear into a similarly-coloured battlefield tile or unit.
+	// ChatFontColor / ChatFontOutline, applied only to ChatFont-drawn text.
+	// When set, ChatFontColor replaces `remapColor` uniformly. The outline is
+	// 8 one-pixel black copies drawn first, so the glyph stays legible over
+	// any background.
 	void DrawChatFontString(OFFSCREEN* off, const char* str, int x, int y, int remapColor)
 	{
 		const int color = g_fontColorSet ? g_fontColorIndex : remapColor;
@@ -428,10 +359,9 @@ namespace
 	}
 
 	// Draw one chat line (logo + optional backdrop + text) at (colX,curY).
-	// `entry` is a 0x48-byte ring-shaped record -- a live ring slot or a
-	// byte-identical retained-history copy; both render the same way.
-	// `useChatFont`: draw text with ChatFont's TTF atlas (already built for
-	// `h` by the caller) instead of the engine's native font -- ChatFontSize.
+	// `entry` is a 0x48-byte ring-shaped record (a live ring slot or a
+	// byte-identical history copy). `useChatFont`: draw text with the ChatFont
+	// atlas the caller already built for `h`, not the engine's native font.
 	void DrawOneLine(OFFSCREEN* off, unsigned char* ta, const unsigned char* entry,
 	                 int colX, int textX, int curY, int scaledH, int h,
 	                 bool hasLogo, int slot, int highlight, bool backdrop,
@@ -450,10 +380,7 @@ namespace
 
 		if (backdrop)
 		{
-			// lineHOverride = h whenever ChatFont is driving the draw, so the
-			// backdrop box is measured against the SAME atlas/height that is
-			// about to render the text (see MeasureChatLineWidth's atlas-
-			// thrash note -- this is the fix: one shared height, not two).
+			// Measure the box against the same height the text will draw at.
 			const int w = ChatBackdrop::MeasureLineWidth(entry, useChatFont ? h : 0);
 			if (w > 0)
 				ChatBackdrop::FillBehind(off,
@@ -472,9 +399,8 @@ namespace
 		}
 	}
 
-	// One walk of the chat ring. `draw` true  -> issue the engine draw calls
-	// and cancel nothing here (the router cancels). `draw` false -> touch
-	// nothing, just classify + (instrumented) log what would be drawn.
+	// One walk of the chat ring. draw = true issues the engine draw calls (the
+	// router then cancels the engine function); draw = false classifies only.
 	// Returns the number of visible lines walked.
 	int WalkChat(OFFSCREEN* off, bool draw)
 	{
@@ -491,19 +417,16 @@ namespace
 		}
 
 		unsigned char* comix = *(unsigned char**)(ta + OFF_COMIX_FONT);
-		int h = comix ? comix[0] : 0;   // ONE byte -- Font_GetLineHeight reads *(u8*)
+		int h = comix ? comix[0] : 0;   // one byte
 		if (h <= 0 || h >= 128)
 		{
 			return 0;
 		}
 
-		// ChatFontSize: draw with ChatFont's TrueType atlas at a configured
-		// pixel height instead of the engine's native bitmap font. Both
-		// columns share one `h`, so this scales line spacing, the logo square,
-		// and the per-column "how many lines fit" math for both uniformly --
-		// exactly the same knobs that already drive the native-size drawer.
-		// Any failure (atlas build fails, ChatFontSize unset) falls back to
-		// the native engine height and font, untouched.
+		// ChatFontSize: draw with the ChatFont TTF atlas at a configured pixel
+		// height. `h` drives line spacing, the logo square and the fit math
+		// for both columns, so overriding it here scales everything uniformly.
+		// Any failure falls back to the native height and font.
 		bool useChatFont = false;
 		if (g_renderer == R_Tadr && g_fontSize > 0 && ChatFont::Ensure(g_fontSize))
 		{
@@ -536,16 +459,10 @@ namespace
 		if (draw && comix)
 			Font_SetCurrent(comix);
 
-		// walk-back to the oldest still-visible entry.
-		//
-		// TADR walks the WHOLE 30-entry ring so no history is lost to the
-		// engine's `textlines` window -- ChatPosition stops throttling that
-		// value once we take over (see ChatPosition::EnsureApplied). How many
-		// of those lines actually get drawn is decided per column, below, by
-		// ChatLines / ChatSysLines and by what physically fits on screen.
-		//
-		// `probe` still mirrors the engine's own window exactly, so the 4a
-		// parity trace ([ChatLayout] PLAN == [ChatEngine] DRAW) stays valid.
+		// Walk back to the oldest still-visible entry. tadr walks the whole
+		// 30-entry ring (ChatPosition stops throttling `textlines` once we take
+		// over); how many of those lines draw is decided per column below.
+		// probe mirrors the engine's own window exactly.
 		const int backSteps = (g_renderer == R_Tadr)
 			? CHAT_ENTRY_COUNT
 			: (textlines < CHAT_ENTRY_COUNT ? textlines : CHAT_ENTRY_COUNT);
@@ -558,16 +475,14 @@ namespace
 				idx = CHAT_ENTRY_COUNT - 1;
 		}
 
-		// Stage 4c-b (step 1): tee new ring lines into the retained history.
-		// Passive -- reads only, and only when TADR owns the draw. `idx` here
-		// is the oldest still-visible entry, reused to seed on the first call.
+		// Tee new ring lines into the retained history (tadr only, passive
+		// read). `idx` is the oldest visible entry, reused to seed.
 		if (g_renderer == R_Tadr)
 			HistoryConsume(ta, idx, freeIndex);
 
-		// --- scrollback arm + player-column source (tadr only) --------------
-		// While the chat prompt is open, the player column is drawn from the
-		// retained history: gather its player-column, mode-visible lines
-		// newest-first into g_sbPick. The system column is unaffected.
+		// Scrollback: while the prompt is open, gather the player column's
+		// mode-visible lines from history, newest-first, into g_sbPick. The
+		// system column is unaffected.
 		const unsigned retained = (g_histCount < (unsigned)HIST_CAP)
 			? g_histCount : (unsigned)HIST_CAP;
 		int sbN = 0;
@@ -594,9 +509,8 @@ namespace
 			g_sbOffset = 0;
 		g_sbArmed = sbArmed;
 
-		// Pre-pass: count visible lines per column. Needed so an upward-growing
-		// player column can start high enough for the newest line to land on
-		// the anchor. Cheap -- <=30 ring reads, no engine calls.
+		// Pre-pass: count visible lines per column, so an upward-growing player
+		// column can start high enough for its newest line to land on the anchor.
 		int plrCount = 0, sysCount = 0;
 		{
 			int j = idx;
@@ -617,20 +531,13 @@ namespace
 			}
 		}
 
-		// Scrollback: the player column is fed from history, not the live ring,
-		// so its budget math and grow-up start work off the history count.
 		if (sbArmed)
-			plrCount = sbN;
+			plrCount = sbN;   // player column is fed from history, not the live ring
 
-		// --- per-column line budget (tadr only) ------------------------------
-		// Draw the NEWEST lines of each column, trimming the oldest when the
-		// column holds more visible lines than (a) its ini cap ChatLines /
-		// ChatSysLines, or (b) what physically fits between the column's start
-		// and the screen edge it grows toward. `plrSkip` / `sysSkip` oldest
-		// visible lines in that column are then walked but not drawn.
-		//
-		// engine / probe are untouched: plrShow == plrCount, nothing trimmed,
-		// so the 4a parity trace still matches the engine 1:1.
+		// Per-column line budget (tadr only): draw the newest lines of each
+		// column, trimming the oldest when it holds more than its ini cap
+		// (ChatLines / ChatSysLines) or than physically fits before the screen
+		// edge it grows toward. engine / probe leave plrShow == plrCount.
 		int plrShow = plrCount, sysShow = sysCount;
 		int plrSkip = 0,        sysSkip = 0;
 		int capPlr = CHAT_ENTRY_COUNT, fitPlr = CHAT_ENTRY_COUNT;   // hoisted: reused by the scrollback block
@@ -644,11 +551,9 @@ namespace
 			if (screenH > 0)
 			{
 				const int bottomLimit = screenH - HUD_BOTTOM;
-				// How many whole lines fit before the column runs into the HUD
-				// bar it grows toward. grow=up climbs from anchorY (line 0) to
-				// HUD_TOP, so it can add (anchorY-HUD_TOP)/h lines above line 0.
-				// grow=down / the system column descend from their start toward
-				// bottomLimit, so exactly (bottomLimit-start)/h whole lines fit.
+				// Whole lines that fit before the column hits the HUD bar it
+				// grows toward: grow=up climbs from anchorY to HUD_TOP,
+				// grow=down / the system column descend toward bottomLimit.
 				fitPlr = g_growUp ? ((anchorY - HUD_TOP) / h + 1)
 				                  : ((bottomLimit - anchorY) / h);
 				fitSys = (bottomLimit - sysY) / h;
@@ -669,11 +574,9 @@ namespace
 			sysSkip = sysCount - sysShow;
 		}
 
-		// The system column is pinned to the top-left and always grows down.
-		// The player column grows down from the anchor by default (oldest drawn
-		// line on the anchor); with ChatGrow=up it starts high enough that the
-		// NEWEST line lands on the anchor and older lines extend upward. Uses
-		// plrShow (post-trim), so a capped column still pins its newest line.
+		// System column: pinned top-left, grows down. Player column: grows down
+		// from the anchor by default; with ChatGrow=up it starts high enough
+		// that the newest line lands on the anchor. Uses plrShow (post-trim).
 		int plrY = anchorY;
 		if (g_renderer == R_Tadr && g_growUp && plrShow > 1)
 		{
@@ -698,16 +601,14 @@ namespace
 				const ChatKind kind = ChatClassify(channel, alert, slot, (char)entry[0]);
 				const bool toSys = g_split && (g_sysGroups & ChatKindBit(kind)) != 0;
 
-				// oldest-first trim: the first plrSkip / sysSkip visible lines
-				// of a capped column are still walked and classified (so
-				// KIND-FIRST is complete) but are not drawn and do not advance
-				// the cursor -- only the NEWEST plrShow / sysShow lines render.
+				// Oldest-first trim: the first plrSkip / sysSkip visible lines
+				// of a capped column are walked but not drawn and do not
+				// advance the cursor.
 				int& seenCol = toSys ? sysSeen : plrSeen;
 				++seenCol;
 				const bool trimmed = seenCol <= (toSys ? sysSkip : plrSkip);
-				// While scrollback is armed the player column is drawn from
-				// history below, so skip its live-ring lines here (the system
-				// column is unaffected).
+				// While scrollback is armed the player column draws from
+				// history below, so skip its live-ring lines here.
 				const bool skip = trimmed || (sbArmed && !toSys);
 
 				const int colX = toSys ? sysX : anchorX;
@@ -733,11 +634,9 @@ namespace
 				idx = 0;
 		}
 
-		// --- scrollback: draw the player column from retained history --------
-		// g_sbPick[0..sbN-1] are history indices newest-first. Show the newest
-		// plrShow of them, offset by g_sbOffset (clamped so you cannot scroll
-		// past the oldest retained line). Oldest-of-window first so grow-up /
-		// grow-down match the live column.
+		// Scrollback: draw the player column from history. g_sbPick[0..sbN-1]
+		// are history indices newest-first; show the newest `show` of them,
+		// offset by g_sbOffset (clamped below), oldest-of-window first.
 		if (sbArmed && g_renderer == R_Tadr)
 		{
 			int show = sbN;
@@ -750,14 +649,10 @@ namespace
 			if (g_sbOffset > maxOff) g_sbOffset = maxOff;
 			if (g_sbOffset < 0)      g_sbOffset = 0;
 
-			// Position indicator: while scrolled away from the live tail,
-			// the single row nearest the anchor (always where the newest
-			// line of the current window would land, by construction of the
-			// `y` start formula below) is spent on a compact readout instead
-			// of a real line, so it is never ambiguous that you are looking
-			// at history, not the live feed. Costs exactly one line of the
-			// existing per-column budget -- never grows past ChatLines or
-			// what fits on screen.
+			// While scrolled away from the live tail, spend the row nearest
+			// the anchor on a "-- N newer --" readout instead of a real line,
+			// so it is unambiguous that this is history. Costs one line of the
+			// column budget.
 			const bool showIndicator = g_sbOffset > 0 && show > 1;
 
 			int y = anchorY;
@@ -810,9 +705,8 @@ namespace
 		return drawnSys + drawnPlr;
 	}
 
-	// The 0x00464060 router.
-	//  R_Probe -> walk + log, return 0 (engine draws).
-	//  R_Tadr  -> draw the list, then cancel the engine function.
+	// The 0x00464060 router. R_Probe: walk, return 0 (engine draws).
+	// R_Tadr: draw the list, then cancel the engine function.
 	unsigned int ChatLayoutRouter(PInlineX86StackBuffer buf)
 	{
 		++g_frames;
@@ -876,10 +770,8 @@ void ChatLayout::Install()
 		CleanToken(grow);
 		g_growUp = (0 == strcmp(grow, "up"));
 
-		// Per-column line budgets. 0 (default) = show as many of the 30-entry
-		// ring as fit on screen; a positive value pins that many NEWEST lines.
-		// Supersedes ChatBottomLines, which only ever throttled the engine's
-		// own draw (and is left disabled once ChatRenderer=tadr takes over).
+		// Per-column line budgets. 0 = fit as many of the 30 ring entries as
+		// the screen allows; a positive value pins that many newest lines.
 		g_plrLines = MyConfig->GetIniInt("ChatLines", 0);
 		g_sysLines = MyConfig->GetIniInt("ChatSysLines", 0);
 		if (g_plrLines < 0) g_plrLines = 0;
@@ -887,38 +779,27 @@ void ChatLayout::Install()
 		if (g_plrLines > CHAT_ENTRY_COUNT) g_plrLines = CHAT_ENTRY_COUNT;
 		if (g_sysLines > CHAT_ENTRY_COUNT) g_sysLines = CHAT_ENTRY_COUNT;
 
-		// 0 (default) = the engine's native ~14px bitmap font, unchanged.
-		// >0 = ChatFont's TrueType atlas at that pixel cell height, applied to
-		// BOTH columns (one shared line height drives logo size, line
-		// spacing, and the per-column fit math already). Clamped to
-		// ChatFont::Ensure's own ceiling; a size that fails to rasterise
-		// (e.g. 0 < n but the atlas build fails) falls back to native, per
-		// frame, with no separate flag needed.
+		// 0 = native bitmap font. >0 = ChatFont TTF atlas at that pixel cell
+		// height, both columns. Clamped to ChatFont::Ensure's ceiling; a size
+		// that fails to rasterise falls back to native per frame.
 		g_fontSize = MyConfig->GetIniInt("ChatFontSize", 0);
 		if (g_fontSize < 0)   g_fontSize = 0;
 		if (g_fontSize > 128) g_fontSize = 128;
 
-		// ChatFontColor: "RRGGBB" hex, or absent/blank/malformed (default) to
-		// keep the per-line player-colour remap ChatFont text has always used.
-		// Resolved once, here, against TA/Escalation's fixed palette (PCX.CPP's
-		// TAPalette[]) -- available from process start, unlike the live
-		// DirectDraw palette which isn't created until later. Only affects
-		// text drawn by ChatFont (ChatFontSize > 0); the native engine font is
-		// untouched.
+		// ChatFontColor resolved once here against the fixed palette (PCX.CPP's
+		// TAPalette[], available from process start unlike the live DirectDraw
+		// palette). Blank/malformed -> off. ChatFontSize-only.
 		char colorBuf[16] = { 0 };
 		MyConfig->GetIniStr("ChatFontColor", colorBuf, sizeof(colorBuf), (LPSTR)"");
-		CleanToken(colorBuf);   // GetIniStr does not strip a trailing ';' comment -- every
-		                        // other string key here does this explicitly (see ParseRenderer)
+		CleanToken(colorBuf);   // GetIniStr keeps a trailing ';' comment; every other
+		                        // string key here strips it explicitly
 		g_fontColorSet = ParseHexColor(colorBuf, g_fontColorIndex);
 
-		// ChatFontOutline: 1px 8-direction black outline behind ChatFont text,
-		// so it stays legible over any background. Also ChatFontSize-only.
-		g_fontOutline = MyConfig->GetIniInt("ChatFontOutline", 0) != 0;
+		g_fontOutline = MyConfig->GetIniInt("ChatFontOutline", 0) != 0;   // ChatFontSize-only
 	}
 
-	// Only shift the bottomcenter anchor to band-bottom when we actually draw
-	// upward (ChatRenderer=tadr). For probe/engine the engine still draws
-	// downward and needs the reserved band above the bar.
+	// Shift the bottomcenter anchor to one line above the bar only when we
+	// actually draw upward (tadr); probe/engine draw down and keep the band.
 	ChatPosition::SetGrowUp(g_growUp && g_renderer == R_Tadr);
 
 	if (g_renderer == R_Engine)
@@ -966,17 +847,13 @@ bool ChatLayout::TakingOver()
 
 bool ChatLayout::ScrollbackWheel(int wheelDeltaRaw)
 {
-	// Only while the chat prompt is open (g_sbArmed, refreshed every tadr
-	// frame in WalkChat -- see ChatPromptOpen()). Every other wheel consumer
-	// (WheelZoom, WheelMoveMegaMap, the SnapOverrideKey build-rotate gesture)
-	// is untouched whenever this returns false.
+	// Consumed only while scrollback is armed (g_sbArmed, refreshed each frame
+	// in WalkChat); otherwise returns false and the other wheel consumers run.
 	if (!g_sbArmed)
 		return false;
 
-	// 120 units (WHEEL_DELTA) per notch; wheel-up (away from the user, a
-	// positive delta) is the conventional "scroll toward older" gesture.
-	// WalkChat clamps g_sbOffset to [0, sbN-show] every frame, so an
-	// out-of-range value here is harmless until the next frame corrects it.
+	// WHEEL_DELTA (120) per notch. WalkChat re-clamps g_sbOffset every frame,
+	// so an out-of-range value here corrects itself next frame.
 	const int notches = wheelDeltaRaw / 120;
 	g_sbOffset += notches;
 	if (g_sbOffset < 0)

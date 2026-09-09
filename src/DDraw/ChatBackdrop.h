@@ -19,21 +19,17 @@ namespace ChatBackdrop
 	// valid OFFSCREEN.
 	void Draw(_OFFSCREEN* offscreen);
 
-	// True iff the ctrl-F2 "Chat Text Backdrop" option is on. When ChatLayout
-	// owns the draw it queries this and, if set, fills the box per line itself
-	// (Draw() walks the engine's single-column layout, which the split breaks).
+	// The three below are for ChatLayout, which draws its own per-line backdrop
+	// when it owns the chat draw (Draw() assumes the engine's single column).
+
+	// True iff the ctrl-F2 "Chat Text Backdrop" option is on.
 	bool BackdropEnabled();
 
-	// Pixel width of one chat-ring line, measured the same way it will be
-	// drawn. `lineHOverride` > 0 measures against a ChatFont atlas built for
-	// that exact pixel height (ChatLayout passes its own ChatFontSize so the
-	// backdrop box matches whatever size actually gets drawn); 0 (default)
-	// measures the engine's own native size (crisp-font atlas at the native
-	// height if the ctrl-F2 option is on, else the desktop GAF font) -- the
-	// original behaviour for every caller that predates ChatFontSize.
+	// Pixel width of one chat-ring line, measured the way it will be drawn.
+	// lineHOverride > 0 measures against a ChatFont atlas at that height;
+	// 0 measures the engine's native size (pre-ChatFontSize behaviour).
 	int MeasureLineWidth(const unsigned char* ringEntry, int lineHOverride = 0);
 
-	// Fill one solid black box, clipped to the surface. For ChatLayout's use
-	// when it draws the list and the backdrop option is on.
+	// One solid black box, clipped to the surface.
 	void FillBehind(_OFFSCREEN* offscreen, int left, int top, int right, int bottom);
 }

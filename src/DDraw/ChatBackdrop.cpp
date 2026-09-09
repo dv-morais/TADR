@@ -56,11 +56,9 @@ namespace
 	const unsigned OFF_TEXTLINES     = 0x37F27;  // dword: max visible lines
 	const unsigned OFF_COMIX_FONT    = 0x391F9;  // FontDataStruct*
 
-	// Line left (no logo; a logo shifts the text right) and the top of the
-	// first line. These are no longer constants: ChatPosition may relocate
-	// the whole list, and the backdrop has to follow it or it detaches from
-	// the text. Both return the vanilla 138 / 52 when the feature is
-	// unconfigured, so behaviour is unchanged by default.
+	// Text left / first-line top. No longer constants: the backdrop has to
+	// follow ChatPosition or it detaches from the text. Both return the
+	// vanilla 138 / 52 when unconfigured.
 	inline int ChatTextX() { return ChatPosition::X(); }
 	inline int ChatTopY()  { return ChatPosition::Y(); }
 	const int BLACK_INDEX = 0;      // TA palette: pure black
@@ -82,11 +80,9 @@ namespace
 	// pointer to the GUI, not the GUI itself.
 	int MeasureChatLineWidth(const unsigned char* str, unsigned char* comixFont, int lineHOverride = 0)
 	{
-		// When the crisp chat font (or ChatLayout's ChatFontSize) is active the
-		// line is rendered with our own TTF atlas, so the backdrop must be
-		// sized to that, not the GAF font. lineHOverride, when given, is
-		// authoritative -- it is whatever height the caller is actually about
-		// to draw at, which may differ from the engine's native comixFont[0].
+		// With the crisp font / ChatFontSize active the line is drawn from our
+		// TTF atlas, so measure against that. lineHOverride, when given, is the
+		// height the caller will actually draw at.
 		const int lineH = lineHOverride > 0 ? lineHOverride : (comixFont ? comixFont[0] : 0);
 		if (lineH > 0 && ChatFont::Ensure(lineH))
 			return ChatFont::Measure((const char*)str);
@@ -266,17 +262,12 @@ namespace
 	// before drawing, so an unexpected stack layout skips rather than crashes.
 	unsigned int ChatDrawHookProc(PInlineX86StackBuffer buf)
 	{
-		// Resolve the configured chat anchor against the current screen size
-		// and patch the engine's four position constants if they moved. Done
-		// here rather than at Install() because the screen size is not known
-		// during DLL init, and because this also picks up resolution changes.
-		// Early-outs to a couple of integer compares once settled.
+		// Re-resolve the chat anchor for the current screen size (not known at
+		// Install(); also picks up resolution changes). Early-outs once settled.
 		ChatPosition::EnsureApplied();
 
-		// When ChatLayout owns the draw (ChatRenderer=tadr) it cancels the
-		// engine function and draws the backdrop itself, per line, at the real
-		// column positions. Our single-column fill would land in the wrong
-		// place, so stand down.
+		// ChatLayout draws its own per-line backdrop at the real column
+		// positions when it owns the draw, so this single-column fill stands down.
 		if (ChatLayout::TakingOver())
 			return 0;
 

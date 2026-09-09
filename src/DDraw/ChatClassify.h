@@ -1,45 +1,30 @@
 #pragma once
 
-// Classifies one chat-ring line into the six kinds ENGINE_NOTES.md §26.3b
-// documents, from the fields the drawer already has in hand:
+// Classifies one chat-ring line into six kinds, from the fields the drawer
+// already has:
 //
 //   channel = entry[0x47] & 0x0F      (1 unit, 2 cmd, 4 event, 8 chat)
 //   alert   = entry[0x44]  (u16)      (non-zero only for unit alerts)
 //   slot    = entry[0x46]             (0..9 player, 10 = system, no logo)
 //   first   = text[0]                 ('<' only for formatted player chat)
 //
-// Nothing here is new engine knowledge -- it is §26.3's verified taxonomy
-// arranged as a lookup, for the Stage 4 channel decouple.
-//
-//   Chat   : chan 0 or 8, text starts '<'     -> player column   (has logo)
-//            OR chan 4, text starts '<'          (ally chat)
+//   Chat   : chan 0/8/4, text starts '<'      -> player column   (has logo)
 //   Ping   : chan 1, alert == 0, slot != 10   -> player column   (has logo)
-//   Unit   : chan 1, alert != 0               -> system column   (slot 10)
+//   Unit   : chan 1, alert != 0               -> system column
 //   Event  : chan 4, text not '<'             -> system column   (elim/leave)
 //   Notice : chan 8, text not '<'; OR         -> system column
-//            chan 1, alert == 0, slot == 10      (pause/ready, LocalNotice...)
-//   Cmd    : chan 2                           -> system column   (slot 10)
+//            chan 1, alert == 0, slot == 10      (pause/ready, LocalNotice)
+//   Cmd    : chan 2                           -> system column
 //   Other  : anything else                    -> system column, never filtered
 //
-// CHANNEL NUMBERS DIFFER BY OBSERVATION POINT. PlayerMute reads
+// Channel numbers differ by observation point: PlayerMute reads
 // Net_PushChatHudMessage, where player chat is channel 8 with the real sender
-// slot. By the time the same line is in the ring buffer this classifier walks,
-// the engine has rewritten it to channel 0, slot 10 (verified 2026-08-31 from
-// [ChatLayout] RING dumps: "<Player> ...", "<Arm> ..." all chan 0 slot 10).
-// Ally chat and elimination/leave events share channel 4; the "<Name...>"
-// wrapper is what tells them apart -- INFERRED from a single run, confirm with
-// a targeted test (send ally chat AND get a player eliminated).
-//
-// "Chat vs Notice/Event" rests on the text-shape heuristic (§26.3 consequence
-// 1: holds across every replay dump, formatter not disassembled); PlayerMute
-// uses the same `text[0]=='<'` test. "Unit vs Ping" is the solid alert-payload
-// discriminator (§26.3 consequence 2).
-//
-// The slot==10 arm of channel 1 was added after the Stage 4a dry run: the
-// engine puts LocalNotice() lines ("No player called 'x'.", and the like)
-// on channel 1 with alert 0 and slot 10, indistinguishable from a ping by
-// channel+alert alone. Without the slot check they route to the movable
-// player column; they belong with the system messages.
+// slot; by the time it reaches the ring this classifier walks, the engine has
+// rewritten it to channel 0, slot 10. Ally chat and elimination/leave events
+// both use channel 4 and are told apart only by the "<Name>" wrapper -- a
+// heuristic, as is "chat vs notice" (text[0]=='<'). "Unit vs ping" is the
+// solid alert-payload discriminator. The channel-1 slot==10 arm catches
+// LocalNotice() lines, which are otherwise indistinguishable from a ping.
 
 enum ChatKind
 {
@@ -83,11 +68,10 @@ inline const char* ChatKindName(ChatKind k)
 	}
 }
 
-// Bit per kind, for the 4b `ChatSysGroups` routing mask. A line goes to the
-// system column when its kind's bit is set, otherwise to the player column.
+// Bit per kind, for the ChatSysGroups routing mask: a line goes to the system
+// column when its kind's bit is set, otherwise to the player column.
 inline unsigned ChatKindBit(ChatKind k) { return 1u << (int)k; }
 
-// The default system set: unit + cmd + event + notice. Chat and pings are the
-// conversational pair and default to the player column.
+// Default system set; chat and pings default to the player column.
 const unsigned CHATGROUPS_DEFAULT_SYS =
 	(1u << CK_Unit) | (1u << CK_Cmd) | (1u << CK_Event) | (1u << CK_Notice) | (1u << CK_Other);

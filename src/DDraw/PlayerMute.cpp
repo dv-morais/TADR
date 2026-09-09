@@ -38,44 +38,15 @@ namespace
 	// Chat_FormatAndSend @0x00463E50 — __stdcall(int arg1, const char* rawText,
 	// int scope, PlayerInfoStruct* overrideName), `ret 0x10` @0x463EDF.
 	//
-	// CORRECTED [live] 2026-08-16: the mute command was first implemented by
-	// hooking Chat_SendOutgoingMessage @0x453360 instead, on the assumption
-	// that (a) it receives the player's raw typed text and (b) cancelling it
-	// suppresses the local echo too. Both assumptions were wrong, and a live
-	// two-player test caught it: typed ".mute chat X" appeared as literal
-	// text in the sender's own chat, and the mute never took effect.
+	// This is the hook site for `.mute`, not Chat_SendOutgoingMessage @0x453360
+	// (its only caller): 0x453360 sees only the already-formatted "<Name> text"
+	// string, and the local echo (call to 0x463CA0 right after it) fires
+	// unconditionally, so cancelling 0x453360 alone cannot stop your own client
+	// echoing the command. arg2 here is the raw typed text, and cancelling the
+	// whole call skips formatting, the network send and the echo together.
 	//
-	// The real architecture, found by tracing 0x453360's ONLY caller
-	// (confirmed via a call-site scan — exactly one xref, right here):
-	//
-	//   sprintf(buf, "<%s%s%s> %s", ..names.., rawText)   ; format string is
-	//                                                      ; literally "<%s%s%s> %s"
-	//                                                      ; at 0x5072C8
-	//   call 0x453360(buf)          <- the OLD hook. Receives the FORMATTED
-	//                                   "<Name> text" string, never the raw
-	//                                   text, so a leading-'.' check here can
-	//                                   never match.
-	//   call 0x463CA0(buf, scope, 0, 10)   <- local echo. UNCONDITIONAL: runs
-	//                                          whether or not 0x453360's send
-	//                                          actually happened. Cancelling
-	//                                          0x453360 alone can never stop
-	//                                          your own client from showing
-	//                                          the raw command text.
-	//
-	// Hooking THIS function instead fixes both problems at once: arg2 here is
-	// the player's raw, unformatted, un-prefixed text, and cancelling the
-	// whole call skips formatting, the network send AND the local echo
-	// together — the command truly never becomes a chat line anywhere.
-	//
-	// Confirmed the ONLY entry point for player-typed chat: 0x453360 has
-	// exactly one caller (this function); this function itself has six
-	// callers, one of which (0x493FAF) sits right next to the known chat-
-	// dialog code (Gui_LoadChatDialog @0x494050, ENGINE_NOTES.md §26.6).
-	//
-	// Length: first instruction is `mov eax,[esp+0x10]` (4 bytes), second is
-	// `sub esp,0xC8` (6 bytes). A 5-byte hook would split the second
-	// instruction after its opcode byte, so the hook must consume both
-	// instructions whole: 4 + 6 = 10 bytes.
+	// Length 10: `mov eax,[esp+0x10]` (4) + `sub esp,0xC8` (6); 5 would split
+	// the second instruction.
 	const DWORD ADDR_SEND_CHAT   = 0x00463E50;
 	const DWORD LEN_SEND_CHAT    = 10;
 	const DWORD ARGBYTES_SEND_CHAT = 0x10;
@@ -331,19 +302,16 @@ namespace
 			bool drop = false;
 			if (chan == 8)
 			{
-				// Channel 8 carries player chat AND pause/ready notices.
-				// Only real chat is formatted "<Name> ..." / "<Name->Allies>",
-				// so use that to keep game-state notices visible.
-				// HEURISTIC: verified against live replay dumps, not against
-				// the formatter's disassembly.
+				// Channel 8 carries chat and pause/ready notices; only real
+				// chat is formatted "<Name> ...". Heuristic (not from the
+				// formatter's disassembly).
 				if (text[0] == '<' && (g_mask[slot] & CatChat))
 					drop = true;
 			}
 			else if (chan == 1 && alert == 0)
 			{
-				// Marker / ping echo ("*Name added a new marker",
-				// "*Name: text"). Channel 1 with a non-zero alert is a unit
-				// alert and must survive — the alert camera reads it.
+				// Ping/marker echo. Channel 1 with a non-zero alert is a unit
+				// alert and must survive (the alert camera reads it).
 				if (g_mask[slot] & CatPings)
 					drop = true;
 			}
