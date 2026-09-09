@@ -108,22 +108,82 @@
 #endif
 
 //
-// COB dispatch-table patch -- replaces the COB script VM's 28-node opcode-
-// dispatch compare ladder with a 256-entry jump table. Class A (bit-identical
-// output, purely faster); see ai-reference/simulation-performance/
-// COB_DISPATCH_PROJECT.md and CobDispatchTable.h for the full derivation.
-// Verified only against Escalation GOLD 10.1/10.2 -- the splice window, the
-// opcode map and every hardcoded address are specific to that exact binary,
-// so this must stay OFF (the safe default below) for every config besides
-// Escalation unless someone re-verifies it against that config's own exe.
-// Every current config_*.h defines this explicitly now (0 everywhere but
-// Escalation), each with a pointer comment back here -- added 2026-09-08 so
-// the flag is discoverable by anyone editing one of those files directly,
-// not just inherited silently. This fallback exists only for a FUTURE
-// config_*.h that forgets to mention it; nothing currently relies on it.
+// COB dispatch-table patch -- Class A (bit-identical, purely faster). See
+// ai-reference/simulation-performance/COB_DISPATCH_PROJECT.md and CLAUDE.md.
+// Escalation-only -- the splice window and every hardcoded address are
+// specific to that exact binary. Every config_*.h defines this explicitly;
+// this fallback is only for a future one that forgets to.
 //
 #ifndef COB_DISPATCH_TABLE_ENABLE
 #define COB_DISPATCH_TABLE_ENABLE 0
+#endif
+
+//
+// ReceiveWeaponFired: take the projectile-kind branch from the firing unit's own weapon slot
+// rather than from the weapon id in the packet.
+//
+// TA picks the branch at 0x0049D42A from WeaponsTypedefArray[pkt[0x19]], but all three
+// UNITS_FireProjectile_* callees build from -- and Ballistic divides by the weaponvelocity of --
+// shooter->UnitWeapons[pkt[0x23]].p_Weapon, with nothing checking the two agree. When a client's
+// copy of the shooter has the wrong unit type its slot can be the all-zero "no weapon" entry
+// while the packet names a ballistic weapon: divide by zero, on a well-formed packet, killing
+// only that client. Reading from p_Weapon is what TA's own local firing path does at 0x0049D742,
+// so this is a no-op unless the client is already diverged. (The meteor test at the top of
+// ReceiveWeaponFired still uses the packet weapon, correctly -- it has no unit at all.)
+//
+// Compile-time only per the standing rule: a fleet split over which projectile gets created is
+// exactly the divergence that rule exists to prevent. 0 still installs the hook, but it only
+// records the TRACE_CAT_WPNX breadcrumb.
+//
+#ifndef WEAPONFIRE_DISPATCH_FROM_SLOT
+#define WEAPONFIRE_DISPATCH_FROM_SLOT 1
+#endif
+
+//
+// Unit-identity audit: every ~900 ticks, walk each player's block of the unit array, compare the
+// walked live count against that player's nNumUnits, and broadcast the owner's own count+digest
+// on CHAT_05 hijack msgId 0x31 (ChatHijackId::UnitIdentityDigest) so every client can check its
+// copy of that block against the authority. TA has never had an "am I in sync?" signal.
+//
+// Diagnostic only -- no simulation state. One block walk and one 65-byte packet per player per
+// ~30 s. A disagreement must survive three consecutive audits before it is reported: the two
+// clients sample different instants and TA is not lockstep. A client built without this neither
+// sends nor parses the packet, and an old client ignores the unregistered msgId.
+//
+// The MORF/GHST/WPNX breadcrumbs in UnitIdentity.cpp are NOT gated by this -- always on.
+//
+#ifndef UNIT_IDENTITY_AUDIT_ENABLE
+#define UNIT_IDENTITY_AUDIT_ENABLE 1
+#endif
+
+//
+// 0x2C dirty-entry bailout. OBSERVE-ONLY until the 2CBD breadcrumbs explain what produces the bad
+// entries. Prod bundles show 18 fatals inside Receive_UnitStatAndMove_2C (13 at 0048BA07 on a null
+// move-class, 5 at 0048B9AD on a wild unit pointer), and the wild pointers are ~1000x further from
+// the unit array than a 16-bit slotDelta can reach -- so this is not simply an unvalidated index,
+// and a guard that skipped the entry would hide the fault while leaving it active. 1 bails to
+// 0x0048BA28, the engine's own end-of-list fall-through.
+//
+#ifndef TDRAW_2C_ENTRY_BAILOUT
+#define TDRAW_2C_ENTRY_BAILOUT 0
+#endif
+
+//
+// Sound instance limiting: drop a local playback whose sound object already started inside this
+// window, in milliseconds. 0 disables.
+//
+// TA plays a 3D sound per projectile event and every play reaches DirectSound, which does registry
+// lookups per buffer play -- sampling put ~26% of the main thread in DSOUND, ~20% of it in
+// RegOpenKeyExA. Hooks DSoundP_PlayBuffer @0x004CF582, the single choke point for 2D, 3D and
+// remote players' sounds (Packet_Dispatcher @0045563F feeds wire sounds into PlaySound_3D_ID_P13),
+// so one hook covers every origin. Audio only: no simulation state, no wire effect.
+//
+// A companion SOUND_BROADCAST_LIMIT_MS was removed 2026-09-09 -- it read "sent=0 dropped=0" in
+// every log, because every caller passes priority 0 and TA never broadcasts sounds here. Do not
+// re-add it without first confirming a caller that passes a non-zero priority.
+//
+#ifndef SOUND_INSTANCE_LIMIT_MS
+#define SOUND_INSTANCE_LIMIT_MS 50
 #endif
 
 //

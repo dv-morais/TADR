@@ -441,8 +441,71 @@ int __stdcall GhostComFixAssistProc(PInlineX86StackBuffer X86StrackBuffer)
 // TA natively assigns the first available ID, starting its search from 0.
 // Unfortunately if that ID was used by a recently-deceased unit, we may still receive damage packets for it.
 // So we're going to additionally require that the ID be available for at least a few seconds before making it available for recycling.
-static std::vector<int> unitIdRecycleTimestamps[10];	// The timestamp at which the ID becomes available
+//
+// Beyond that margin we hand out the slot free the LONGEST, not the lowest-numbered one: a stale
+// packet naming a recycled slot finds a live unit of the wrong TYPE, the divergence that kills
+// ReceiveWeaponFired (UnitIdentity.h), and LRU maximises the window in which it lands on an empty
+// slot instead and is discarded.
+//
+// Per player: a FIFO of freed slots holding freedAt, plus a bump pointer over never-used ones.
+// GameTime is monotonic so the queue stays sorted by age. Both ends O(1); the old lowest-free
+// search was O(nIds) per create, quadratic across a mass transfer (UNITS_GiveUnit is destroy +
+// recreate, so a '.take' of a 1000-unit army is 1000 creates).
+//
+// UNITS_CreateFromNetwork @0x4861d0 writes UnitINFOID directly and never reaches this hook, so a
+// held slot can be occupied behind our back. Every hand-out re-checks UnitID == 0 and skips; a
+// skipped slot rejoins the FIFO when its unit dies.
 static const int RECYCLE_MARGIN_TIME = 5 * 30;			// 5 sec
+
+// Why holding a slot longer helps: Send_UnitStatAndMove_2C @0x0048B710 advertises
+// Units_Begin + (GameTime % Skim) each tick, an empty slot as typeID 0; then
+// UnitMove_DeserializeAndUpdate @0x0048B3F0 sets PENDING_DEATH at 0x0048B42C and
+// AutoHealAndAimLoop @0x0048AFB9 reaps it. One sweep clears a ghost.
+
+struct UnitIdFreeList
+{
+	struct Entry
+	{
+		unsigned short slot;
+		int freedAt;    // GameTime the slot was released; both age tests derive from this
+	};
+
+	std::vector<Entry> ring;
+	unsigned head = 0;			// oldest entry
+	unsigned count = 0;
+	unsigned bumpNext = 0;		// slots [bumpNext, ring.size()) have never been handed out
+
+	void Reset(unsigned nIds)
+	{
+		ring.assign(nIds, Entry{ 0, 0 });
+		head = 0;
+		count = 0;
+		bumpNext = 0;
+	}
+
+	void Push(unsigned short slot, int freedAt)
+	{
+		// One push per free (UNITS_ReceiveUnitDeath bails on an already-dead unit at 0x486706),
+		// and a slot is popped before it can be freed again, so the ring cannot overflow.
+		if (ring.empty() || count >= ring.size()) {
+			return;
+		}
+		ring[(head + count) % ring.size()] = Entry{ slot, freedAt };
+		++count;
+	}
+};
+
+static UnitIdFreeList unitIdFreeList[10];
+
+static void UnitIdFreeList_SyncSize(const TAdynmemStruct* taPtr)
+{
+	const unsigned nIds = taPtr->PlayerUnitsNumber_Skim;
+	for (int i = 0; i < 10; ++i) {
+		if (taPtr->GameTime == 0 || unitIdFreeList[i].ring.size() != nIds) {
+			unitIdFreeList[i].Reset(nIds);
+		}
+	}
+}
 
 unsigned int FixFactoryExplosionsAssignUnitIdAddr = 0x486036;
 int __stdcall FixFactoryExplosionsAssignUnitIdProc(PInlineX86StackBuffer X86StrackBuffer)
@@ -453,13 +516,8 @@ int __stdcall FixFactoryExplosionsAssignUnitIdProc(PInlineX86StackBuffer X86Stra
 	int playerIndex = *(int*)(X86StrackBuffer->Esp + 0x14 - 4) / 0x14b;
 	int unitIndexRequested = X86StrackBuffer->Edx;
 
-	unsigned nIds = taPtr->PlayerUnitsNumber_Skim;
-	for (int i = 0; i < 10; ++i) {
-		if (taPtr->GameTime == 0 || unitIdRecycleTimestamps[i].size() < nIds) {
-			unitIdRecycleTimestamps[i].clear();
-			unitIdRecycleTimestamps[i].resize(nIds, 0);		// all IDs available since t=0
-		}
-	}
+	UnitIdFreeList_SyncSize(taPtr);
+	const unsigned nIds = taPtr->PlayerUnitsNumber_Skim;
 
 	PlayerStruct* player = &taPtr->Players[playerIndex];
 	UnitStruct* units = (UnitStruct*)X86StrackBuffer->Esi;
@@ -476,13 +534,50 @@ int __stdcall FixFactoryExplosionsAssignUnitIdProc(PInlineX86StackBuffer X86Stra
 		}
 	}
 
-	for (int n = 0; n < taPtr->PlayerUnitsNumber_Skim; ++n) {
-		if (0 == player->Units[n].UnitID && taPtr->GameTime >= unitIdRecycleTimestamps[playerIndex][n]) {
-			//IDDrawSurface::OutptFmtTxt("[FixFactoryExplosionsAssignUnitIdProc] player=%d, assignedId=%d\n", playerIndex, n);
-			X86StrackBuffer->Esi = (DWORD)&player->Units[n];
-			X86StrackBuffer->rtnAddr_Pvoid = (LPVOID)0x48605d;
-			return X86STRACKBUFFERCHANGE;
+	int assigned = -1;
+	if (unsigned(playerIndex) >= 10) {
+		// Shouldn't happen; fall back to stock lowest-free rather than refuse to create.
+		for (unsigned n = 0; n < nIds; ++n) {
+			if (0 == player->Units[n].UnitID) {
+				assigned = int(n);
+				break;
+			}
 		}
+	}
+	else {
+		UnitIdFreeList& freeList = unitIdFreeList[playerIndex];
+
+		// Prefer a slot that has never been handed out: no stale packet can name it at all.
+		while (assigned < 0 && freeList.bumpNext < nIds) {
+			const unsigned n = freeList.bumpNext++;
+			if (0 == player->Units[n].UnitID) {
+				assigned = int(n);
+			}
+		}
+
+		// Oldest-first, one age gate; the queue is sorted by age so "the front is too young"
+		// proves none qualify. Nothing old enough => "no ids available", as stock TA did.
+		//
+		// A stricter 2*Skim gate was tried and removed as dead code: FIFO considers the oldest
+		// first whatever the threshold, so it can never pick a different slot than this one does.
+		while (assigned < 0 && freeList.count > 0) {
+			const UnitIdFreeList::Entry entry = freeList.ring[freeList.head];
+			if (taPtr->GameTime - entry.freedAt < RECYCLE_MARGIN_TIME) {
+				break;
+			}
+			freeList.head = (freeList.head + 1) % freeList.ring.size();
+			--freeList.count;
+			if (0 == player->Units[entry.slot].UnitID) {
+				assigned = entry.slot;
+			}
+		}
+	}
+
+	if (assigned >= 0) {
+		//IDDrawSurface::OutptFmtTxt("[FixFactoryExplosionsAssignUnitIdProc] player=%d, assignedId=%d\n", playerIndex, assigned);
+		X86StrackBuffer->Esi = (DWORD)&player->Units[assigned];
+		X86StrackBuffer->rtnAddr_Pvoid = (LPVOID)0x48605d;
+		return X86STRACKBUFFERCHANGE;
 	}
 
 	// no UnitIds available
@@ -499,14 +594,8 @@ int __stdcall FixFactoryExplosionsRecycleUnitIdProc(PInlineX86StackBuffer X86Str
 	UnitStruct* unit = (UnitStruct*)(X86StrackBuffer->Esi);
 	char* packetData = *(char**)(X86StrackBuffer->Esp + 0x7c);
 	int unitInGameIndex = *(unsigned short*)(packetData + 1);
-	
-	unsigned nIds = taPtr->PlayerUnitsNumber_Skim;
-	for (int i = 0; i < 10; ++i) {
-		if (taPtr->GameTime == 0 || unitIdRecycleTimestamps[i].size() < nIds) {
-			unitIdRecycleTimestamps[i].clear();
-			unitIdRecycleTimestamps[i].resize(nIds, 0);		// all IDs available since t=0
-		}
-	}
+
+	UnitIdFreeList_SyncSize(taPtr);
 
 	if (!unit) {
 		IDDrawSurface::OutptTxt("[FixFactoryExplosionsRecycleUnitIdProc] null unit!\n");
@@ -528,9 +617,8 @@ int __stdcall FixFactoryExplosionsRecycleUnitIdProc(PInlineX86StackBuffer X86Str
 				unit->UnitInGameIndex, unit->Owner_PlayerPtr0->UnitsIndex_Begin, taPtr->PlayerUnitsNumber_Skim);
 		}
 		else {
-			unitIdRecycleTimestamps[unit->OwnerIndex][playerUnitIndex] = taPtr->GameTime + RECYCLE_MARGIN_TIME;
-			//IDDrawSurface::OutptFmtTxt("[FixFactoryExplosionsRecycleUnitIdProc] player=%d, UnitId=%d, timestampWhenAvailable=%d\n",
-			//	int(unit->OwnerIndex), playerUnitIndex, unitIdRecycleTimestamps[unit->OwnerIndex][playerUnitIndex]);
+			// Store when it was freed, not a deadline, so the age test lives with the allocator.
+			unitIdFreeList[unit->OwnerIndex].Push((unsigned short)playerUnitIndex, taPtr->GameTime);
 		}
 	}
 	return 0;
@@ -1107,9 +1195,22 @@ static bool OrderDispatchShouldLog(DWORD n)
 static const DWORD kTaCodeLo = 0x00401000u;
 static const DWORD kTaCodeHi = 0x004fc000u;
 
+// Published for TeamColorNanolathe: during order dispatch the unit whose handler is running is
+// the one emitting nanolathe particles, so it can be used directly instead of scanning the whole
+// unit array for the nearest unit to the emission point. Stamped with GameTime so a consumer can
+// reject it outside the dispatch window rather than reading a stale unit.
+DWORD g_currentOrderUnit = 0;
+int   g_currentOrderUnitTick = -1;
+
 static int OrderDispatchGuardCommon(PInlineX86StackBuffer buf, DWORD unit,
                                     unsigned bailout, const char* which)
 {
+	{
+		const TAdynmemStruct* ta = *(TAdynmemStruct**)0x00511de8;
+		g_currentOrderUnit = unit;
+		g_currentOrderUnitTick = ta ? ta->GameTime : -1;
+	}
+
 	UnitOrdersStruct* order = (UnitOrdersStruct*)buf->Esi;
 
 	// The order pointer itself can already be freed memory. Probe only the 5
@@ -1195,6 +1296,79 @@ int __stdcall OrderDispatchGuardBgProc(PInlineX86StackBuffer buf)
 	// BackgroundOrderStateController keeps unit_ptr in EDI across the loop.
 	return OrderDispatchGuardCommon(buf, buf->Edi, OrderDispatchGuardBgBailout, "background");
 }
+
+// ============================================================================
+// Sound instance limiting -- see config.h for why and the measurements behind it.
+// ============================================================================
+#if SOUND_INSTANCE_LIMIT_MS > 0
+
+static const unsigned kSoundSlots = 512;          // power of two
+struct SoundStamp { DWORD key; DWORD ms; };
+static SoundStamp g_playStamp[kSoundSlots];
+static unsigned g_sndPlayed = 0, g_sndDropped = 0;
+static DWORD g_sndLogMs = 0;
+
+static inline unsigned SoundSlot(DWORD key)
+{
+	key ^= key >> 16; key *= 0x7FEB352Du; key ^= key >> 15;
+	return key & (kSoundSlots - 1);
+}
+
+// True when this key already fired inside the window, i.e. the caller should suppress.
+// Direct-mapped: a colliding key simply refreshes the slot, so the worst case is a missed
+// suppression, never a wrongly suppressed sound.
+static bool SoundFiredRecently(SoundStamp* table, DWORD key, DWORD windowMs, DWORD now)
+{
+	SoundStamp& s = table[SoundSlot(key)];
+	if (s.key == key && (now - s.ms) < windowMs)
+		return true;
+	s.key = key;
+	s.ms = now;
+	return false;
+}
+
+static void SoundLimitHeartbeat(DWORD now)
+{
+	if (now - g_sndLogMs < 30000u)
+		return;
+	g_sndLogMs = now;
+	const unsigned play = g_sndPlayed + g_sndDropped;
+	IDDrawSurface::OutptFmtTxt(
+		"[SoundLimit] played=%u dropped=%u (%u%% dropped)",
+		g_sndPlayed, g_sndDropped, play ? (g_sndDropped * 100u / play) : 0u);
+}
+#endif
+
+#if SOUND_INSTANCE_LIMIT_MS > 0
+// Hooked just past DSoundP_PlayBuffer's prologue (SUB ESP,0x1C + 4 pushes), so the suppress path
+// can jump to the function's own early return at 0x004CF5D7 rather than doing stack surgery.
+// The two stolen instructions are local-variable stores the early-return path never reads.
+// arg1 is SoundEffectsArray[soundId] -- a stable per-sound object, verified in Ghidra at
+// 0047F367 (MOV EBX,[EAX+ECX*4+0x33A13]), so it keys the cooldown correctly.
+static const unsigned SoundPlayHookAddr  = 0x004cf582;
+static const unsigned SoundPlayHookLen   = 8;          // resumes at 0x004CF58A
+static const unsigned SoundPlayEarlyRet  = 0x004cf5d7; // XOR EAX,EAX; POP x4; ADD ESP,0x1C; RET 0xC
+static const unsigned char SoundPlayBytes[8] = { 0x89, 0x74, 0x24, 0x18, 0x89, 0x6C, 0x24, 0x10 };
+
+int __stdcall SoundInstanceLimitProc(PInlineX86StackBuffer buf)
+{
+	// SUB ESP,0x1C then 4 pushes => the caller's arguments start at Esp+0x30.
+	const DWORD* args = (const DWORD*)(buf->Esp + 0x30);
+	const DWORD soundObj = args[0];
+	const DWORD now = GetTickCount();
+
+	if (soundObj && SoundFiredRecently(g_playStamp, soundObj, SOUND_INSTANCE_LIMIT_MS, now))
+	{
+		++g_sndDropped;
+		buf->rtnAddr_Pvoid = (LPVOID)SoundPlayEarlyRet;
+		return X86STRACKBUFFERCHANGE;
+	}
+	++g_sndPlayed;
+	SoundLimitHeartbeat(now);
+	return 0;
+}
+#endif
+
 
 // ============================================================================
 // Generic crash report — fires for ANY fatal exception that the address-specific
@@ -2266,6 +2440,21 @@ TABugFixing::TABugFixing ()
 		OrderDispatchGuardMainAddr, 6, INLINE_5BYTESLAGGERJMP, OrderDispatchGuardMainProc));
 	OrderDispatchGuardBackground.reset(new InlineSingleHook(
 		OrderDispatchGuardBgAddr, 6, INLINE_5BYTESLAGGERJMP, OrderDispatchGuardBgProc));
+#if SOUND_INSTANCE_LIMIT_MS > 0
+	if (memcmp((const void*)SoundPlayHookAddr, SoundPlayBytes, SoundPlayHookLen) == 0)
+	{
+		SoundInstanceLimit.reset(new InlineSingleHook(
+			SoundPlayHookAddr, SoundPlayHookLen, INLINE_5BYTESLAGGERJMP, SoundInstanceLimitProc));
+	}
+	else
+	{
+		IDDrawSurface::OutptFmtTxt("[SoundLimit] SKIPPED play hook: bytes at 0x%08X not stock", SoundPlayHookAddr);
+	}
+#endif
+#if SOUND_INSTANCE_LIMIT_MS > 0
+	IDDrawSurface::OutptFmtTxt("[SoundLimit] installed: playback=%dms", SOUND_INSTANCE_LIMIT_MS);
+#endif
+
 	IDDrawSurface::OutptFmtTxt(
 		"[OrderDispatchGuard] installed at 0x%08X (main) and 0x%08X (background): "
 		"COBHandler_index + handler_fn checked, OBSERVE-ONLY (bailout=%d)",

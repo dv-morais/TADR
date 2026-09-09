@@ -1,6 +1,7 @@
 #pragma once
 
 #include <memory>
+#include <vector>
 
 class SingleHook;
 #define GUIERRORCOUNT (4)
@@ -61,6 +62,7 @@ private:
 	std::unique_ptr <SingleHook> NetworkDispatchLog;
 	std::unique_ptr <SingleHook> OrderDispatchGuardMain;
 	std::unique_ptr <SingleHook> OrderDispatchGuardBackground;
+	std::unique_ptr <SingleHook> SoundInstanceLimit;
 	std::vector<std::unique_ptr<SingleHook> > m_hooks;
 	CRITICAL_SECTION DrawPlayer_MAPPEDMEM_cris;
 	CRITICAL_SECTION UnitLoop_cris;
@@ -73,6 +75,12 @@ public:
 };
 
 extern TABugFixing * FixTABug;;
+
+// The unit whose order handler is currently running, captured by OrderDispatchGuard and stamped
+// with the GameTime it was captured on. TeamColorNanolathe uses it to identify the nanolathe
+// emitter directly instead of scanning the unit array; reject it when the tick does not match.
+extern DWORD g_currentOrderUnit;
+extern int   g_currentOrderUnitTick;
 
 int __stdcall BadModelHunter (PInlineX86StackBuffer X86StrackBuffer);
 
@@ -98,6 +106,33 @@ void InstallCrashTrace();
                                     //          a=unit b=order c=depth d=outerSavedReturn
 #define TRACE_CAT_KICK 0x4B49434Bu  // 'KICK' : ConstructionKickout mutated an order list
                                     //          a=unit b=oldOrders c=oldOrderType d=branch
+#define TRACE_CAT_CFNR 0x43464E52u  // 'CFNR' : UNITS_CreateFromNetwork envelope RE-ENTERED --
+                                    //          unitrotate.cpp saves [Esp] in ONE global, so any
+                                    //          occurrence means the outer call returns to the
+                                    //          INNER caller and applies the WRONG spawn record
+                                    //          a=depth b=outer return c=outer record d=inner record
+// ---- Unit-identity breadcrumbs (see UnitIdentity.cpp) --------------------------
+// A wrong local UnitID means a wrong UnitWeapons[].p_Weapon (a pure function of it), which is what
+// kills ReceiveWeaponFired at 0049CE6A. These make that divergence visible without the crash.
+#define TRACE_CAT_MORF 0x4D4F5246u  // 'MORF' : UNITS_CreateFromNetwork onto an OCCUPIED slot
+                                    //          a=unitIdx|(ownerSlot<<16) b=oldType|(newType<<16)
+                                    //          c=call site: 004553E4 0x09 pkt, 0048BA00 2C dirty,
+                                    //            0048B497 2C round-robin    d=GameTime
+#define TRACE_CAT_GHST 0x47485354u  // 'GHST' : PENDING_DEATH set at 0048B42C -- owner says the slot
+                                    //          is empty and we still have a live unit
+                                    //          a=unitIdx b=localType c=ownerSlot d=GameTime
+#define TRACE_CAT_WPNX 0x57504E58u  // 'WPNX' : ReceiveWeaponFired packet weapon != slot weapon
+                                    //          a=unitIdx|(weaponSlot<<16) b=packet WeaponTypedef*
+                                    //          c=slot WeaponTypedef*      d=GameTime
+#define TRACE_CAT_2CBD 0x32434244u  // '2CBD' : 0x2C dirty entry with impossible fields
+                                    //          a=iteration|(reason<<16) b=unit ptr c=typeID
+                                    //          d=bitCursorBytes|(declaredLen<<16); cursor past the
+                                    //          declared length means misframed, not merely stale
+#define TRACE_CAT_SYNC 0x53594E43u  // 'SYNC' : identity audit finding.
+                                    //          a=slot            -> nNumUnits drift:
+                                    //             b=walked live count c=nNumUnits d=GameTime
+                                    //          a=slot|0x8000     -> persistent peer disagreement:
+                                    //             b=(myLive<<16)|ownerLive c=digest xor d=GameTime
 void CrashTrace_RecordEvent(unsigned cat, unsigned a, unsigned b, unsigned c, unsigned d);
 // RECV-style breadcrumb that also captures the first bytes of a packet buffer.
 void CrashTrace_RecordPacket(unsigned cat, unsigned fromDpid, unsigned size,

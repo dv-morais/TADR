@@ -339,6 +339,7 @@ if NOT "$(LocalDebuggerWorkingDirectory)" == "$(ProjectDir)" if exist "$(LocalDe
     <ClCompile Include="WeaponTags.cpp" />
     <ClCompile Include="WeaponIdOverflow.cpp" />
     <ClCompile Include="WeaponFiredExt.cpp" />
+    <ClCompile Include="UnitIdentity.cpp" />
     <ClCompile Include="NotToAir.cpp" />
     <ClCompile Include="OffMapAircraft.cpp" />
     <ClCompile Include="SurfaceFire.cpp" />
@@ -367,6 +368,7 @@ if NOT "$(LocalDebuggerWorkingDirectory)" == "$(ProjectDir)" if exist "$(LocalDe
     <ClInclude Include="ChatHijackIds.h" />
     <ClInclude Include="WeaponIdOverflow.h" />
     <ClInclude Include="WeaponFiredExt.h" />
+    <ClInclude Include="UnitIdentity.h" />
     <ClInclude Include="DialogBase.h" />
     <ClInclude Include="ShadingFix.h" />
     <ClInclude Include="PacketChatRouter.h" />

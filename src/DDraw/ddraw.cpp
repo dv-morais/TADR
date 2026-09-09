@@ -45,6 +45,7 @@ using namespace std;
 #include "ShadingFix.h"
 #include "WeaponIdOverflow.h"
 #include "WeaponFiredExt.h"
+#include "UnitIdentity.h"
 #include "ReloadBars.h"
 #include "UnitStatusCounters.h"
 #include "EngineLimits.h"
@@ -260,6 +261,10 @@ bool APIENTRY DllMain(HINSTANCE hinst, unsigned long reason, void*)
 		WeaponIdOverflow::Install();
 		WeaponFiredExt::Install();
 #endif
+		// After WeaponFiredExt: both hook ReceiveWeaponFired, but at different
+		// addresses (0x0049D27E entry vs 0x0049D42A dispatch), so they do not
+		// collide. Install order is not load-bearing; keep them adjacent.
+		UnitIdentity::Install();
 #if REPAIR_RATE_FIX_ENABLE
 		RepairRateFix::Install();
 #endif
@@ -288,6 +293,7 @@ bool APIENTRY DllMain(HINSTANCE hinst, unsigned long reason, void*)
 #if SHARE_ABUSE_GUARD
 		ShareGuard::Shutdown();
 #endif
+		UnitIdentity::Shutdown();
 #if TDRAW_EXTENDED_WEAPON_IDS
 		WeaponFiredExt::Shutdown();
 		WeaponIdOverflow::Shutdown();
