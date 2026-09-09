@@ -157,27 +157,14 @@ void CountTableEntries(int& errorPathCount, int& handlerCount, int& outOfRangeCo
     }
 }
 
-// Tier A self-report (added 2026-09-08, see ai-reference/simulation-performance/
-// COB_DISPATCH_PROJECT.md "Tier A"): Install() below hands SingleHook a 38-byte
-// buffer and never learns whether the write actually landed --
-// SingleHook::Hook() is void, and MemWriteWithBackup's result is discarded all
-// the way up the call chain (verified by reading hook.cpp; there is no
-// alternate path that surfaces a VirtualProtect failure). So this reads the
-// window straight back out of live process memory -- the same way
-// checkPatchState() does from outside the process, just from inside it instead
-// -- and logs a single line to tdrawlog.txt confirming (a) the bytes on disk
-// now ARE g_patchBytes, not still kOriginalBytes or something else entirely,
-// (b) the table pointer embedded in the live jmp instruction really is
-// &g_table[0], and (c) the table itself still sums to 256 across error-path,
-// handler and (should never happen) out-of-range entries.
-//
-// This is NOT a replacement for checkPatchState(): it is this module grading
-// its own homework, so a bug that corrupts both the write and this readback
-// the same way would pass silently. It exists to catch everything a good-
-// faith external reader cannot: a VirtualProtect failure, a torn write, a
-// build where the linker put g_table somewhere BuildPatchBytes() didn't
-// expect. Every run writes one line; no attach, no separate script, no manual
-// step.
+// SingleHook::Hook() is void and never surfaces a failed write, so this reads
+// the window straight back out of live memory (like checkPatchState() does
+// from outside the process, just from inside it) and logs one line to
+// tdrawlog.txt confirming the bytes match, the table pointer is correct, and
+// the table sums to 256 entries. Not a replacement for checkPatchState() -- a
+// bug that corrupts both the write and this readback the same way would pass
+// silently -- but it catches a VirtualProtect failure or a torn write with
+// zero manual steps, on every run.
 void LogInstallReport()
 {
     const unsigned char* live = reinterpret_cast<const unsigned char*>(kWindowAddr);
@@ -196,17 +183,10 @@ void LogInstallReport()
         return;
     }
 
-    // Table pointer dword: re-derived directly from BuildPatchBytes()'s own byte
-    // layout (mov=2, test=2+4, jz=2+4, shr=3, movzx=3, jmp-opcode/modrm/sib=3 ==
-    // 23 bytes before this dword starts), NOT copied from checkPatchState()'s
-    // Lua. Lua's readBytes() is 1-INDEXED, so that script's `bytes[24]` is this
-    // same dword's first byte -- 0-based offset 23, C index 24 in a 1-based
-    // table. A first draft of this function wrote `live + 24` here by reusing
-    // that "24" as if it were already 0-based, which reads one byte too far
-    // (3 real address bytes + the first 0xCC padding byte) and would have
-    // logged SELF-CHECK FAILED on every single successful install. Caught by
-    // re-deriving the offset independently before this ever ran once, not by a
-    // report; kept here so it does not happen again.
+    // Offset re-derived from BuildPatchBytes()'s own byte layout (23 bytes
+    // precede this dword) -- NOT copied from checkPatchState()'s Lua, whose
+    // readBytes() is 1-indexed and would be off by one here. Do not change
+    // this back to +24.
     std::uint32_t liveTableAddr = 0;
     std::memcpy(&liveTableAddr, live + 23, 4);
     const std::uint32_t expectTableAddr =
