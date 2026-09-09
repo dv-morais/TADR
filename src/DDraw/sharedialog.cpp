@@ -16,14 +16,9 @@ using namespace softwaredebugmode;
 #if SHARE_PERCENT_ENABLE
 namespace
 {
-	// Tracks what was last WRITTEN to each label, so the percent-mode redundant-
-	// write guard in {Metal,Energy}PosProc has something meaningful to compare
-	// against. Comparing the freshly-computed 0-100 slider percentage against the
-	// raw ShareMetal/ShareEnergy float (an absolute in resource units, typically in
-	// the hundreds or thousands) would almost never match by coincidence, which
-	// would defeat the whole point of that guard (avoiding a label rewrite -- and
-	// the SetValue_GUI5ID call it triggers -- on every mouse-move tick while
-	// dragging).
+	// Last percentage WRITTEN to each label, so the redundant-write guard in
+	// {Metal,Energy}PosProc has a percentage to compare against instead of
+	// the raw absolute ShareMetal/ShareEnergy float.
 	int g_lastShownMetalPercent = -1;
 	int g_lastShownEnergyPercent = -1;
 }
@@ -51,10 +46,8 @@ void __stdcall MetalPosProc(GUIInfo * GUIINFO_P, int)
 		}
 		int Metal= static_cast<int>(scale* setsharemetal->thick);
 #if SHARE_PERCENT_ENABLE
-		// thick is 100 in this mode (ShareDialogInit below), so Metal here IS the
-		// 0-100 percentage already. Clamp defensively against the range-1 vs range
-		// off-by-one between this read-back and ShareDialogInit's write (see the
-		// comment there) letting scale hit fractionally over 1.
+		// thick is 100 in this mode, so Metal here IS the 0-100 percentage
+		// already; clamp defensively against the range/range-1 off-by-one.
 		if (Metal<0)   Metal= 0;
 		if (Metal>100) Metal= 100;
 		if (Metal!=g_lastShownMetalPercent)
@@ -161,11 +154,9 @@ int __stdcall ShareDialogInit (PInlineX86StackBuffer X86StrackBuffer)
 
 		setsharemetal= (GUI3_4IDControl *)SubControl_str2ptr ( UpperControl, "SRL_SETSHRMETAL");
 #if SHARE_PERCENT_ENABLE
-		// Percentage mode: the slider is always 0-100 when this module is compiled
-		// in (decision: no in-dialog toggle without a SHARE.gui gadget -- see
-		// ai-reference/share-resources-percentage/CLAUDE.md SS8.5). thick=100 also
-		// means the knobpos computation below can never divide by a max-storage
-		// value of 0, unlike the vanilla path underneath #else.
+		// Slider is always 0-100 when this module is compiled in (no in-dialog
+		// toggle without a SHARE.gui gadget). thick=100 also means knobpos
+		// below can never divide by a max-storage value of 0.
 		setsharemetal->thick= 100;
 		setsharemetal->knobsize=setsharemetal->height;
 		setsharemetal->range= setsharemetal->width- setsharemetal->knobsize;

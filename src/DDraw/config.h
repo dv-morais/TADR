@@ -201,22 +201,12 @@
 #endif
 
 //
-// SharePercent: accept a `%` suffix on the existing `+setsharemetal` /
-// `+setshareenergy` commands (e.g. `+setshareenergy 50%`) so the share
-// threshold tracks a PERCENTAGE of max storage instead of a fixed absolute --
-// vanilla's own threshold is an absolute float that is never re-derived when
-// storage capacity grows, so a threshold set early in a game silently becomes
-// a much smaller fraction of storage later (see
-// ai-reference/share-resources-percentage/CLAUDE.md and ENGINE_NOTES.md SS41).
-// A plain integer argument (no `%`) clears percentage mode and reproduces
-// vanilla exactly, so `+setshareenergy 500`, the TA Demo Recorder's
-// Alt+Shift+Z hotkey, and any quick-chat preset keep working unchanged.
-// Purely local, per-client state: the threshold field this writes is read
-// only by the local player's own auto-share tick, so this cannot desync and
-// interoperates with unpatched clients (ENGINE_NOTES SS41.6). Defaulted OFF
-// so a config_*.h that predates the flag does not pick it up silently. When
-// 0, SharePercent.cpp compiles to nothing, no hook is installed, and the
-// SHARE dialog's sliders/labels behave exactly as vanilla.
+// SharePercent: accept a `%` suffix on +setsharemetal / +setshareenergy
+// (e.g. `+setshareenergy 50%`) so the share threshold tracks a percentage of
+// max storage instead of a fixed absolute that never adjusts as storage
+// grows. A plain integer keeps vanilla behaviour unchanged. Local per-client
+// state only -- cannot desync. Defaulted OFF; when 0, SharePercent.cpp
+// compiles to nothing.
 //
 #ifndef SHARE_PERCENT_ENABLE
 #define SHARE_PERCENT_ENABLE 0
