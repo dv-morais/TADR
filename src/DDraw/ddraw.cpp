@@ -221,7 +221,9 @@ bool APIENTRY DllMain(HINSTANCE hinst, unsigned long reason, void*)
 		// ChatPosition::X()/Y() to keep its box under the relocated text.
 		ChatPosition::Install();
 		ChatLayout::Install();   // after ChatPosition, before ChatBackdrop (checks Active())
+#if PLAYER_MUTE_ENABLE
 		PlayerMute::Install();
+#endif
 		ChatBackdrop::Install();
 		MultiplayerSchemaUnits::GetInstance();
 
@@ -294,7 +296,9 @@ bool APIENTRY DllMain(HINSTANCE hinst, unsigned long reason, void*)
 #ifdef TADR_DEBUG_PIPE
 		DebugPipeServer::Stop();
 #endif
+#if PLAYER_MUTE_ENABLE
 		PlayerMute::Shutdown();
+#endif
 		ChatLayout::Shutdown();
 		ChatPosition::Shutdown();
 		ReloadBars::Shutdown();

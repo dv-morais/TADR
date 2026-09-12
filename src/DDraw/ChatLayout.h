@@ -8,8 +8,8 @@ struct _OFFSCREEN;
 // Hud_DrawChatHudRing @0x00464060 (INLINE_5BYTESLAGGERJMP, chains with
 // ChatBackdrop's hook on the same address) and cancels the engine function,
 // which enables the channel split, retained scrollback, and the ChatFont*
-// keys. ChatRenderer=engine (default) leaves this module inert; probe walks
-// and classifies but lets the engine draw. Keys are documented in totala.ini.
+// keys. ChatRenderer=engine (default) leaves this module inert. Keys are
+// documented in totala.ini.
 //
 // Render-only: reads the chat ring and screen geometry, writes neither, and
 // touches no simulation state, so clients with different settings stay in

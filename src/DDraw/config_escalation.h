@@ -140,6 +140,10 @@
 // and the "Show ally queues" dialog checkbox is not created.
 #define ALLIED_BUILD_QUEUE_ENABLE 0
 
+// PlayerMute: local `.mute` / `.unmute` -- see config.h. Escalation is the
+// designated rollout target for the whole chat feature set this ships with.
+#define PLAYER_MUTE_ENABLE 1
+
 //
 // Air-unit stacking / area-damage immunity -- see AreaDamageOverflow.h.
 // Lets one explosion damage every airborne unit on a cell instead of only the one

@@ -31,6 +31,24 @@
 namespace
 {
 	const unsigned CHAT_DRAW_ADDR = 0x00464060;
+	// `sub esp,0x20 / push ebx / push ebp` -- checked before installing the
+	// hook, same reasoning as PlayerMute.cpp's BytesMatch: an exe where this
+	// does not hold is not one this module's hardcoded ring/field offsets
+	// apply to either, and InlineSingleHook has no way to know that on its
+	// own.
+	const unsigned char kExpectedChatDraw[5] = { 0x83, 0xEC, 0x20, 0x53, 0x55 };
+
+	bool BytesMatch(DWORD addr, const unsigned char* expected, size_t len)
+	{
+		__try
+		{
+			return memcmp((const void*)addr, expected, len) == 0;
+		}
+		__except (EXCEPTION_EXECUTE_HANDLER)
+		{
+			return false;
+		}
+	}
 
 	// Ring layout (same offsets as ChatBackdrop.cpp).
 	const unsigned OFF_CHAT_TEXT     = 0x12EF;
@@ -45,9 +63,6 @@ namespace
 	const unsigned OFF_SCREENCHAT    = 0x37F02;
 	const unsigned OFF_TEXTLINES     = 0x37F27;
 	const unsigned OFF_COMIX_FONT    = 0x391F9;
-	const unsigned OFF_GAME_TIME     = 0x38A47;   // int; goes backwards on a new match / replay rewind
-	const unsigned OFF_PLAYERS       = 0x1B63;
-	const unsigned PLAYER_STRIDE     = 331;
 	const unsigned OFF_REMAP_NORMAL    = 0xDDA;
 	const unsigned OFF_REMAP_HIGHLIGHT = 0xDD5;
 
@@ -75,14 +90,14 @@ namespace
 	const int TA_BLACK_INDEX = 0;
 
 	// Engine functions this drawer calls (signatures from the disassembly).
+	// Font_SetColors / DrawColorTextInScreen are called via
+	// ChatBackdrop::DrawChatLine instead of bound here directly.
 	typedef void (__stdcall* Fn_FontSetCurrent)(void* fontDataStruct);  // 0x4C1420, ret 4
-	typedef void (__stdcall* Fn_FontSetColors)(int a, int b);           // 0x4C13A0, ret 8
 	typedef void (__stdcall* Fn_DrawPlayerLogo)(void* off, void* player, RECT* r, int flag); // 0x467C00, ret 0x10
 	const Fn_FontSetCurrent  Font_SetCurrent  = (Fn_FontSetCurrent) 0x004C1420;
-	const Fn_FontSetColors   Font_SetColors   = (Fn_FontSetColors)  0x004C13A0;
 	const Fn_DrawPlayerLogo  DrawPlayerLogo   = (Fn_DrawPlayerLogo) 0x00467C00;
 
-	enum Renderer { R_Engine = 0, R_Probe, R_Tadr };
+	enum Renderer { R_Engine = 0, R_Tadr };
 
 	Renderer          g_renderer  = R_Engine;
 	bool              g_split     = false;
@@ -96,7 +111,6 @@ namespace
 	bool              g_fontOutline    = false;
 	bool              g_active    = false;
 	InlineSingleHook* g_hook      = nullptr;
-	unsigned          g_frames    = 0;
 
 	// Retained chat history: the engine ring holds only 30 entries, so every
 	// line it gains is copied here (oldest evicted past HIST_CAP) for
@@ -140,7 +154,7 @@ namespace
 		// New match / replay rewind: game clock went backwards. Drop the old
 		// history; do NOT re-seed (the ring is not cleared between matches) --
 		// just resync the delta to the current freeIndex.
-		const int gameTime = *(int*)(ta + OFF_GAME_TIME);
+		const int gameTime = reinterpret_cast<TAdynmemStruct*>(ta)->GameTime;
 		if (gameTime < g_histLastGameTime)
 		{
 			g_histCount    = 0;
@@ -224,7 +238,6 @@ namespace
 		strncpy_s(buf, sizeof(buf), s, _TRUNCATE);
 		CleanToken(buf);
 		if (0 == strcmp(buf, "tadr"))  return R_Tadr;
-		if (0 == strcmp(buf, "probe")) return R_Probe;
 		return R_Engine;
 	}
 
@@ -304,6 +317,12 @@ namespace
 		return true;
 	}
 
+	// All three confirmed callers of 0x00464060 push a real OFFSCREEN* as the
+	// single stdcall argument, so at this JMP-lagger hook [Esp+4] is always
+	// it. There is deliberately no fallback to [Esp] -- that slot holds the
+	// return address, not another candidate pointer, and treating it as one
+	// would hand FillBehind/ChatFont::DrawString an address chosen by
+	// whatever bytes happen to sit at the call site.
 	OFFSCREEN* ResolveOffscreen(PInlineX86StackBuffer buf)
 	{
 		__try
@@ -311,9 +330,6 @@ namespace
 			OFFSCREEN* a = *(OFFSCREEN**)(buf->Esp + 4);
 			if (LooksLikeOffscreen(a))
 				return a;
-			OFFSCREEN* b = *(OFFSCREEN**)(buf->Esp);
-			if (LooksLikeOffscreen(b))
-				return b;
 		}
 		__except (EXCEPTION_EXECUTE_HANDLER) {}
 		return nullptr;
@@ -374,14 +390,20 @@ namespace
 			RECT r;
 			r.left = colX; r.top = curY;
 			r.right = colX + scaledH; r.bottom = curY + scaledH;
-			void* player = ta + OFF_PLAYERS + slot * PLAYER_STRIDE;
+			void* player = &reinterpret_cast<TAdynmemStruct*>(ta)->Players[slot];
 			DrawPlayerLogo(off, player, &r, 0);
 		}
 
 		if (backdrop)
 		{
-			// Measure the box against the same height the text will draw at.
-			const int w = ChatBackdrop::MeasureLineWidth(entry, useChatFont ? h : 0);
+			// Pass g_fontSize (the atlas key ChatFont::Ensure caches on), not
+			// `h` (CellHeight()'s tmHeight, which Verdana frequently rounds to
+			// a different value -- e.g. requested 15 builds a tmHeight-14
+			// atlas). Passing `h` here made this Ensure() a different cache
+			// key than WalkChat's, so every backdrop-enabled frame rebuilt
+			// the whole glyph atlas twice (GDI CreateFontA + a 236-glyph
+			// rasterise pass, each way) instead of hitting the cache.
+			const int w = ChatBackdrop::MeasureLineWidth(entry, useChatFont, g_fontSize);
 			if (w > 0)
 				ChatBackdrop::FillBehind(off,
 					colX - PAD_X_LEFT, curY - PAD_Y,
@@ -389,14 +411,9 @@ namespace
 		}
 
 		if (useChatFont)
-		{
 			DrawChatFontString(off, (const char*)entry, textX, curY, remap);
-		}
 		else
-		{
-			Font_SetColors(0xFE, remap);
-			DrawColorTextInScreen(off, (const char*)entry, textX, curY, -1, 0);
-		}
+			ChatBackdrop::DrawChatLine(off, (const char*)entry, textX, curY, remap);
 	}
 
 	// One walk of the chat ring. draw = true issues the engine draw calls (the
@@ -455,14 +472,14 @@ namespace
 		const bool backdrop = draw && ChatBackdrop::BackdropEnabled();
 
 		// The engine selects the COMIX font once before the loop; do the same
-		// so Font_SetColors / DrawColorTextInScreen act on the right object.
+		// so the per-line ChatBackdrop::DrawChatLine calls below act on the
+		// right object.
 		if (draw && comix)
 			Font_SetCurrent(comix);
 
-		// Walk back to the oldest still-visible entry. tadr walks the whole
-		// 30-entry ring (ChatPosition stops throttling `textlines` once we take
-		// over); how many of those lines draw is decided per column below.
-		// probe mirrors the engine's own window exactly.
+		// Walk back to the oldest still-visible entry: the whole 30-entry ring
+		// (ChatPosition stops throttling `textlines` once we take over); how
+		// many of those lines draw is decided per column below.
 		const int backSteps = (g_renderer == R_Tadr)
 			? CHAT_ENTRY_COUNT
 			: (textlines < CHAT_ENTRY_COUNT ? textlines : CHAT_ENTRY_COUNT);
@@ -676,10 +693,7 @@ namespace
 						if (useChatFont)
 							DrawChatFontString(off, status, anchorX, y, remap);
 						else
-						{
-							Font_SetColors(0xFE, remap);
-							DrawColorTextInScreen(off, status, anchorX, y, -1, 0);
-						}
+							ChatBackdrop::DrawChatLine(off, status, anchorX, y, remap);
 					}
 				}
 				else
@@ -689,7 +703,7 @@ namespace
 					const unsigned char* e = g_hist[g_sbPick[pick]];
 					const int sl = e[OFF_STR_LOGO];
 					const int hl = e[OFF_STR_FLAGS] & 0x20;
-					const bool hasLogo = (sl >= 0 && sl < 10);
+					const bool hasLogo = (sl >= 0 && sl < 10);   // 10 = system; >10 = don't blit
 					int textX = anchorX;
 					if (hasLogo)
 						textX = (int)((double)anchorX + 1.5 * (double)scaledH);
@@ -705,11 +719,10 @@ namespace
 		return drawnSys + drawnPlr;
 	}
 
-	// The 0x00464060 router. R_Probe: walk, return 0 (engine draws).
-	// R_Tadr: draw the list, then cancel the engine function.
+	// The 0x00464060 router: draw the list, then cancel the engine function.
+	// Only ever installed/active when g_renderer == R_Tadr (see Install()).
 	unsigned int ChatLayoutRouter(PInlineX86StackBuffer buf)
 	{
-		++g_frames;
 		if (!g_active)
 			return 0;
 
@@ -723,25 +736,19 @@ namespace
 			return 0;   // engine draws
 		}
 
-		if (g_renderer == R_Tadr)
-			ChatPosition::EnsureApplied();
+		ChatPosition::EnsureApplied();
 
-		bool drew = false;
 		__try
 		{
-			WalkChat(off, g_renderer == R_Tadr);
-			drew = (g_renderer == R_Tadr);
+			WalkChat(off, true);
 		}
 		__except (EXCEPTION_EXECUTE_HANDLER)
 		{
 			return 0;   // fail safe -- let the engine draw
 		}
 
-		if (!drew)
-			return 0;   // R_Probe: engine still draws
-
-		// R_Tadr: suppress the engine function. Return to its caller with the
-		// stack cleaned as a `ret 4` would leave it (pop return addr + 1 arg).
+		// Suppress the engine function. Return to its caller with the stack
+		// cleaned as a `ret 4` would leave it (pop return addr + 1 arg).
 		buf->Esp = buf->Esp + 4 + 4;
 		buf->rtnAddr_Pvoid = rtnAddr;
 		return X86STRACKBUFFERCHANGE;
@@ -799,7 +806,7 @@ void ChatLayout::Install()
 	}
 
 	// Shift the bottomcenter anchor to one line above the bar only when we
-	// actually draw upward (tadr); probe/engine draw down and keep the band.
+	// actually draw upward (tadr); engine draws down and keeps the band.
 	ChatPosition::SetGrowUp(g_growUp && g_renderer == R_Tadr);
 
 	if (g_renderer == R_Engine)
@@ -808,21 +815,22 @@ void ChatLayout::Install()
 		return;
 	}
 
-	if (g_split && g_renderer != R_Tadr)
-		IDDrawSurface::OutptTxt("[ChatLayout] ChatSplit=1 ignored - needs ChatRenderer=tadr");
+	if (!BytesMatch(CHAT_DRAW_ADDR, kExpectedChatDraw, sizeof(kExpectedChatDraw)))
+	{
+		IDDrawSurface::OutptTxt("[ChatLayout] unexpected bytes at 0x00464060 - not installed");
+		return;
+	}
 
 	g_hook = new InlineSingleHook(
 		CHAT_DRAW_ADDR, 5, INLINE_5BYTESLAGGERJMP, ChatLayoutRouter);
 	g_active = true;
 
 	IDDrawSurface::OutptFmtTxt(
-		"[ChatLayout] ChatRenderer=%s split=%d grow=%s groups=0x%X lines=%d/%d fontsize=%d "
-		"fontcolor=%d/%d outline=%d - hook on 0x%08X (%s)",
-		g_renderer == R_Tadr ? "tadr" : "probe",
-		(g_renderer == R_Tadr && g_split) ? 1 : 0, g_growUp ? "up" : "down",
+		"[ChatLayout] ChatRenderer=tadr split=%d grow=%s groups=0x%X lines=%d/%d fontsize=%d "
+		"fontcolor=%d/%d outline=%d - hook on 0x%08X (engine draw cancelled)",
+		g_split ? 1 : 0, g_growUp ? "up" : "down",
 		g_sysGroups, g_plrLines, g_sysLines, g_fontSize,
-		g_fontColorSet ? 1 : 0, g_fontColorIndex, g_fontOutline ? 1 : 0, CHAT_DRAW_ADDR,
-		g_renderer == R_Tadr ? "engine draw cancelled" : "DRY RUN, engine still draws");
+		g_fontColorSet ? 1 : 0, g_fontColorIndex, g_fontOutline ? 1 : 0, CHAT_DRAW_ADDR);
 }
 
 void ChatLayout::Shutdown()
@@ -847,9 +855,18 @@ bool ChatLayout::TakingOver()
 
 bool ChatLayout::ScrollbackWheel(int wheelDeltaRaw)
 {
-	// Consumed only while scrollback is armed (g_sbArmed, refreshed each frame
-	// in WalkChat); otherwise returns false and the other wheel consumers run.
-	if (!g_sbArmed)
+	// Checks the engine directly rather than trusting g_sbArmed, which is
+	// only refreshed on a frame where WalkChat actually runs to completion --
+	// several early-outs above (bad ta/textlines/h/freeIndex) and the
+	// router's own SEH catch can all skip that update, and a stale `true`
+	// would keep swallowing the wheel event ahead of WheelZoom /
+	// WheelMoveMegaMap / build-rotate for good. Mirrors WalkChat's own
+	// "armed" condition (retained history exists and the prompt is open).
+	if (g_renderer != R_Tadr || g_histCount == 0)
+		return false;
+
+	unsigned char* ta = TaBase();
+	if (!ta || !ChatPromptOpen(ta))
 		return false;
 
 	// WHEEL_DELTA (120) per notch. WalkChat re-clamps g_sbOffset every frame,

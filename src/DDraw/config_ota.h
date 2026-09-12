@@ -97,6 +97,10 @@
 // and the "Show ally queues" dialog checkbox is not created.
 #define ALLIED_BUILD_QUEUE_ENABLE 0
 
+// PlayerMute: local .mute / .unmute -- see config.h. Off here; only turn on
+// once this chat feature set has been validated against this config too.
+#define PLAYER_MUTE_ENABLE 0
+
 //
 // Air-unit stacking / area-damage immunity -- see AreaDamageOverflow.h.
 // Lets one explosion damage every airborne unit on a cell instead of only the one

@@ -78,15 +78,12 @@ namespace
 	// DrawText does: EAX = *(int*)0x51FBA4; if (*(int*)(EAX+0x14) != 0) { font
 	// object = that; seq = *(int*)(fontObject + 0xc); ... }. Note 0x51FBA4 is a
 	// pointer to the GUI, not the GUI itself.
-	int MeasureChatLineWidth(const unsigned char* str, unsigned char* comixFont, int lineHOverride = 0)
+	// GAF-glyph-advance measurement -- DrawText's own metrics, matched exactly
+	// so the backdrop is sized the way the engine actually draws (see the
+	// comment above). Falls back to the narrower COMIX estimate only if the
+	// desktop GUI's font object cannot be resolved.
+	int MeasureNativeLineWidth(const unsigned char* str, unsigned char* comixFont)
 	{
-		// With the crisp font / ChatFontSize active the line is drawn from our
-		// TTF atlas, so measure against that. lineHOverride, when given, is the
-		// height the caller will actually draw at.
-		const int lineH = lineHOverride > 0 ? lineHOverride : (comixFont ? comixFont[0] : 0);
-		if (lineH > 0 && ChatFont::Ensure(lineH))
-			return ChatFont::Measure((const char*)str);
-
 		__try
 		{
 			const int desktopGui = *(int*)G_DESKTOP_GUI;
@@ -115,6 +112,21 @@ namespace
 			// Fall through to the COMIX estimate on any bad pointer.
 		}
 		return GetTextExtent(comixFont, (const char*)str);
+	}
+
+	// Draw()'s own ctrl-F2 backdrop pass: every line it measures is, by
+	// construction, about to be substituted with ChatFont by DrawTextHookProc
+	// below (both are gated on the same CrispChatEnabled() check, and every
+	// line Draw() walks is a live-ring pointer), so "try TTF, else native" is
+	// unconditionally correct here. ChatLayout does not use this -- it calls
+	// the public ChatBackdrop::MeasureLineWidth below instead, passing its own
+	// explicit useChatFont decision rather than having this function guess.
+	int MeasureChatLineWidth(const unsigned char* str, unsigned char* comixFont)
+	{
+		const int lineH = comixFont ? comixFont[0] : 0;
+		if (lineH > 0 && ChatFont::Ensure(lineH))
+			return ChatFont::Measure((const char*)str);
+		return MeasureNativeLineWidth(str, comixFont);
 	}
 
 	// Mirrors the engine's per-line visibility test in ChatMessageWithLogo.
@@ -202,7 +214,9 @@ void ChatBackdrop::Draw(_OFFSCREEN* offscreen)
 		const int channel = entry[OFF_STR_FLAGS] & 0x0F;
 		if (ChatLineVisible(mode, screenchat, channel))
 		{
-			const bool hasLogo = entry[OFF_STR_LOGO] != 10;
+			// < 10, not != 10: any value above 10 is not a valid Players[]
+			// index either (matches ChatLayout.cpp's identical check).
+			const bool hasLogo = entry[OFF_STR_LOGO] < 10;
 			const int  textX   = ChatTextX() + (hasLogo ? lineHeight : 0);
 			const int  textW   = MeasureChatLineWidth(entry, font);
 			if (textW > 0)
@@ -319,10 +333,26 @@ namespace
 		return dlg && dlg->GetChatBackdropEnabled();
 	}
 
+	// 0x4C13A0, ret 8 -- same binding ChatLayout.cpp keeps for its own native
+	// draw path; duplicated here rather than shared, matching how the ring
+	// layout constants above are already duplicated between the two files.
+	typedef void (__stdcall* Fn_FontSetColors)(int a, int b);
+	const Fn_FontSetColors Font_SetColors = (Fn_FontSetColors) 0x004C13A0;
+
 	unsigned int DrawTextHookProc(PInlineX86StackBuffer buf)
 	{
 		__try
 		{
+			// ChatLayout draws every line itself (native or ChatFont, by its
+			// own explicit decision -- see ChatBackdrop::DrawChatLine) when it
+			// owns the chat draw. Standing this hook down there means a line
+			// that is not a live-ring pointer -- retained history, or the
+			// scrollback indicator -- is never treated differently from one
+			// that is; the pointer-range sniff below only ever applied to the
+			// engine's own single-column draw anyway.
+			if (ChatLayout::TakingOver())
+				return 0;
+
 			if (!CrispChatEnabled())
 				return 0;
 
@@ -386,13 +416,23 @@ bool ChatBackdrop::BackdropEnabled()
 	return CrispChatEnabled();
 }
 
-int ChatBackdrop::MeasureLineWidth(const unsigned char* ringEntry, int lineHOverride)
+int ChatBackdrop::MeasureLineWidth(const unsigned char* ringEntry, bool useChatFont, int fontHeight)
 {
 	if (!ringEntry)
 		return 0;
+	if (useChatFont && fontHeight > 0 && ChatFont::Ensure(fontHeight))
+		return ChatFont::Measure((const char*)ringEntry);
 	unsigned char* ta = *(unsigned char**)0x00511de8;
 	unsigned char* font = ta ? *(unsigned char**)(ta + OFF_COMIX_FONT) : nullptr;
-	return MeasureChatLineWidth(ringEntry, font, lineHOverride);
+	return MeasureNativeLineWidth(ringEntry, font);
+}
+
+void ChatBackdrop::DrawChatLine(_OFFSCREEN* offscreen, const char* str, int x, int y, int colorIndex)
+{
+	if (!offscreen || !str)
+		return;
+	Font_SetColors(0xFE, colorIndex);
+	DrawColorTextInScreen((OFFSCREEN*)offscreen, str, x, y, -1, 0);
 }
 
 void ChatBackdrop::FillBehind(_OFFSCREEN* offscreen, int left, int top, int right, int bottom)

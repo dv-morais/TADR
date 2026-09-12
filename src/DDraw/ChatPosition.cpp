@@ -55,9 +55,16 @@ namespace
 	int   g_appliedX    = VANILLA_X;
 	int   g_appliedY    = VANILLA_Y;
 
+	// Set by SetGrowUp() to force one re-resolve+re-patch on the next
+	// EnsureApplied(), without corrupting g_appliedX/Y (which ChatPosition::X()/
+	// Y() hand out directly) in the meantime.
+	bool  g_needsReapply = false;
+
 	// Non-zero once we have forced the engine's `textlines` down for the
-	// bottomcenter anchor (see EnsureApplied). Shutdown restores 30.
+	// bottomcenter anchor (see EnsureApplied). Shutdown restores the real
+	// pre-patch value (g_origTextlines), captured the first time we write it.
 	int   g_appliedTextlines = 0;
+	int   g_origTextlines    = -1;   // -1 = not yet captured
 
 	const unsigned OFF_TEXTLINES = 0x37F27;   // ta+0x37F27, dword
 
@@ -333,7 +340,7 @@ void ChatPosition::Shutdown()
 	{
 		unsigned char* ta = TaBase();
 		if (ta)
-			*(int*)(ta + OFF_TEXTLINES) = 30;   // engine's own default
+			*(int*)(ta + OFF_TEXTLINES) = (g_origTextlines >= 0) ? g_origTextlines : 30;
 		g_appliedTextlines = 0;
 	}
 
@@ -359,8 +366,11 @@ void ChatPosition::EnsureApplied()
 	if (!Resolve(x, y))
 		return;                       // screen size not known yet
 
-	if (!g_patched || x != g_appliedX || y != g_appliedY)
+	if (!g_patched || g_needsReapply || x != g_appliedX || y != g_appliedY)
+	{
 		WritePosition(x, y);
+		g_needsReapply = false;
+	}
 
 	// bottomcenter only: cap the engine's line count. Hud_DrawChatHudRing
 	// draws downward from the anchor up to `textlines` lines, so with a bottom
@@ -379,6 +389,8 @@ void ChatPosition::EnsureApplied()
 		if (ta)
 		{
 			int* tl = (int*)(ta + OFF_TEXTLINES);
+			if (g_origTextlines < 0)
+				g_origTextlines = *tl;   // capture the real pre-patch value once
 			const int want = Clamp(g_bottomLines, 1, 30);
 			if (*tl != want)
 			{
@@ -397,7 +409,7 @@ void ChatPosition::SetGrowUp(bool growUp)
 	if (g_growUp == growUp)
 		return;
 	g_growUp = growUp;
-	g_appliedX = -1;   // force EnsureApplied() to re-resolve and re-patch
+	g_needsReapply = true;
 }
 
 int ChatPosition::X()

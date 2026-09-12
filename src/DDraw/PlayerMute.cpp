@@ -38,18 +38,61 @@ namespace
 	// Chat_FormatAndSend @0x00463E50 — __stdcall(int arg1, const char* rawText,
 	// int scope, PlayerInfoStruct* overrideName), `ret 0x10` @0x463EDF.
 	//
-	// This is the hook site for `.mute`, not Chat_SendOutgoingMessage @0x453360
-	// (its only caller): 0x453360 sees only the already-formatted "<Name> text"
-	// string, and the local echo (call to 0x463CA0 right after it) fires
-	// unconditionally, so cancelling 0x453360 alone cannot stop your own client
-	// echoing the command. arg2 here is the raw typed text, and cancelling the
-	// whole call skips formatting, the network send and the echo together.
+	// This is the hook site for `.mute`, not Chat_SendOutgoingMessage @0x453360:
+	// 0x453360 is called FROM here (this function is its only caller) but only
+	// ever receives the already-formatted "<Name> text" string, and the local
+	// echo (the call to 0x463CA0 right after it) fires unconditionally, so
+	// cancelling 0x453360 alone cannot stop your own client echoing the
+	// command. arg2 here is the raw typed text, and cancelling the whole call
+	// skips formatting, the network send and the echo together.
 	//
 	// Length 10: `mov eax,[esp+0x10]` (4) + `sub esp,0xC8` (6); 5 would split
 	// the second instruction.
 	const DWORD ADDR_SEND_CHAT   = 0x00463E50;
 	const DWORD LEN_SEND_CHAT    = 10;
 	const DWORD ARGBYTES_SEND_CHAT = 0x10;
+
+	// Expected prologue bytes at each site (see the comments above). Checked
+	// before installing either hook: ChatPosition already refuses to patch an
+	// exe whose constants it does not recognise, and this module's two
+	// splices deserve the same guard -- on an exe where they do not hold
+	// (this codebase already carries several that fail its own
+	// CompatibleVersion probe), these addresses are not guaranteed to be
+	// live code at all, and InlineSingleHook has no way to know that on its
+	// own; it will just splice whatever is there.
+	const unsigned char kExpectedPushChat[6]  = { 0x55, 0x56, 0x8B, 0x74, 0x24, 0x0C };
+	const unsigned char kExpectedSendChat[10] = { 0x8B, 0x44, 0x24, 0x10, 0x81, 0xEC, 0xC8, 0x00, 0x00, 0x00 };
+
+	bool BytesMatch(DWORD addr, const unsigned char* expected, size_t len)
+	{
+		__try
+		{
+			return memcmp((const void*)addr, expected, len) == 0;
+		}
+		__except (EXCEPTION_EXECUTE_HANDLER)
+		{
+			return false;
+		}
+	}
+
+	// Checked here, at C++ static-init time, NOT inside Install(). The whole
+	// DLL's global constructors run before DllMain's body executes a single
+	// line (standard CRT DLL startup order), which is before ddraw.cpp's
+	// `new TABugFixing` (line ~214) -- itself before PlayerMute::Install()
+	// (line ~225) -- ever runs. ADDR_PUSH_CHAT is hooked by BOTH modules
+	// (TABugFix::NewChatTextGuard and this one); TABugFixing's constructor
+	// splices its own lagger-jmp there first, so a live re-read of that
+	// address done later, from inside Install(), sees TABugFix's jmp instead
+	// of the original prologue and fails this check every time. That
+	// regression was caught live (chat/ping mute silently disabled on
+	// install) and is what this static-init snapshot fixes: it reads the
+	// address before anyone has hooked it, so the result is correct
+	// independent of Install() call order in ddraw.cpp. ADDR_SEND_CHAT does
+	// not currently need this (TakeClaim::Install() runs after
+	// PlayerMute::Install()), but it costs nothing to check the same way and
+	// removes any future dependency on that ordering too.
+	const bool kPushChatBytesOk = BytesMatch(ADDR_PUSH_CHAT, kExpectedPushChat, sizeof(kExpectedPushChat));
+	const bool kSendChatBytesOk = BytesMatch(ADDR_SEND_CHAT, kExpectedSendChat, sizeof(kExpectedSendChat));
 
 	InlineSingleHook* g_chatHook = nullptr;
 	InlineSingleHook* g_sendHook = nullptr;
@@ -83,10 +126,20 @@ namespace
 		{
 			for (int n = 0; n < kMaxPlayers; ++n)
 			{
+				// Identity only (Name, DirectPlayID) -- NOT PlayerActive. This
+				// fingerprint's whole job is telling "still the same game" from
+				// "different game, don't carry the mask over", and DirectPlayID
+				// does not change when a player merely drops or is eliminated
+				// mid-game; only actually starting a different game reassigns
+				// it. Gating on PlayerActive too (as this used to) means the
+				// first player to leave or die flips their own dpid to 0 here,
+				// changes the fingerprint, and silently wipes every mute in the
+				// session for everyone -- worst case in the game most likely to
+				// have a mute worth keeping.
 				const PlayerStruct& p = ta->Players[n];
 				memcpy(out.names[n], p.Name, sizeof(out.names[n]));
 				out.names[n][sizeof(out.names[n]) - 1] = '\0';
-				out.dpids[n] = p.PlayerActive ? p.DirectPlayID : 0;
+				out.dpids[n] = p.DirectPlayID;
 			}
 			return true;
 		}
@@ -366,12 +419,22 @@ namespace
 void PlayerMute::Install()
 {
 	if (!g_chatHook)
-		g_chatHook = new InlineSingleHook(
-			ADDR_PUSH_CHAT, LEN_PUSH_CHAT, INLINE_5BYTESLAGGERJMP, PushChatProc);
+	{
+		if (kPushChatBytesOk)
+			g_chatHook = new InlineSingleHook(
+				ADDR_PUSH_CHAT, LEN_PUSH_CHAT, INLINE_5BYTESLAGGERJMP, PushChatProc);
+		else
+			IDDrawSurface::OutptTxt("[PlayerMute] unexpected bytes at 0x00463CA0 - chat/ping mute disabled");
+	}
 
 	if (!g_sendHook)
-		g_sendHook = new InlineSingleHook(
-			ADDR_SEND_CHAT, LEN_SEND_CHAT, INLINE_5BYTESLAGGERJMP, SendChatProc);
+	{
+		if (kSendChatBytesOk)
+			g_sendHook = new InlineSingleHook(
+				ADDR_SEND_CHAT, LEN_SEND_CHAT, INLINE_5BYTESLAGGERJMP, SendChatProc);
+		else
+			IDDrawSurface::OutptTxt("[PlayerMute] unexpected bytes at 0x00463E50 - .mute/.unmute disabled");
+	}
 
 	ResetAll();
 	IDDrawSurface::OutptTxt("[PlayerMute] installed (.mute / .unmute are local only)");
@@ -428,11 +491,19 @@ void PlayerMute::SyncSession()
 	if (!CaptureSession(now))
 		return;
 
-	if (!g_sessionValid || memcmp(&now, &g_session, sizeof(now)) != 0)
+	if (!g_sessionValid)
 	{
 		memcpy(&g_session, &now, sizeof(now));
 		g_sessionValid = true;
 		ResetAll();
+		return;
+	}
+
+	if (memcmp(&now, &g_session, sizeof(now)) != 0)
+	{
+		memcpy(&g_session, &now, sizeof(now));
+		ResetAll();
+		PlayerMute::LocalNotice("[mute] new game detected -- mutes reset");
 	}
 }
 
