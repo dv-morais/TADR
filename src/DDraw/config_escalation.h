@@ -81,6 +81,20 @@
 #define AIR_CORPSE_FALL_ENABLE 1
 
 //
+// COB script VM -- opcode dispatch
+//
+// Replaces the 28-node compare-ladder opcode dispatch with a 256-entry jump
+// table. Class A (bit-identical, purely faster). Full derivation, status and
+// test results: ai-reference/simulation-performance/COB_DISPATCH_PROJECT.md
+// and CLAUDE.md. Verify the static case against the binary with
+// ai-reference/tools/exe/cob_dispatch.py --verify.
+//
+// Escalation-only by construction -- the splice window and all 57 hardcoded
+// addresses belong to Escalation GOLD 10.1/10.2's TotalA.exe specifically.
+// config.h defaults this to 0 everywhere else.
+#define COB_DISPATCH_TABLE_ENABLE 1
+
+//
 // Extended weapon IDs (>= 256)
 //
 // Installs WeaponIdOverflow (heap-backed weapon slots above TA's hard-coded
@@ -143,3 +157,10 @@
 // WIDER SCOPE THAN AreaDamageOverflow: this sits in the claim path used by every unit
 // type on both layers, not just aircraft. Class B patch.
 #define GRID_CLAIM_TIEBREAK_ENABLE 1
+
+//
+// Percentage-based resource share thresholds -- see SharePercent.h and config.h for
+// the full description. Purely local per-client state; not a Class B patch, does not
+// require every player to run the same build.
+#define SHARE_PERCENT_ENABLE 1
+

@@ -48,15 +48,18 @@ using namespace std;
 #include "ShadingFix.h"
 #include "WeaponIdOverflow.h"
 #include "WeaponFiredExt.h"
+#include "UnitIdentity.h"
 #include "ReloadBars.h"
 #include "UnitStatusCounters.h"
 #include "EngineLimits.h"
 #include "ZeroDamageMapWeapons.h"
 #include "TeamColorNanolathe.h"
 #include "RepairRateFix.h"
+#include "CobDispatchTable.h"
 #include "TransportedExplosions.h"
 #include "AreaDamageOverflow.h"
 #include "GridClaimTieBreak.h"
+#include "SharePercent.h"
 #ifdef TADR_DEBUG_PIPE
 #include "DebugPipeServer.h"
 #endif
@@ -263,12 +266,22 @@ bool APIENTRY DllMain(HINSTANCE hinst, unsigned long reason, void*)
 #if SHARE_ABUSE_GUARD
 		ShareGuard::Install();
 #endif
+#if SHARE_PERCENT_ENABLE
+		SharePercent::Install();       // does not share a hook address with anything above; order-independent
+#endif
 #if TDRAW_EXTENDED_WEAPON_IDS
 		WeaponIdOverflow::Install();
 		WeaponFiredExt::Install();
 #endif
+		// After WeaponFiredExt: both hook ReceiveWeaponFired, but at different
+		// addresses (0x0049D27E entry vs 0x0049D42A dispatch), so they do not
+		// collide. Install order is not load-bearing; keep them adjacent.
+		UnitIdentity::Install();
 #if REPAIR_RATE_FIX_ENABLE
 		RepairRateFix::Install();
+#endif
+#if COB_DISPATCH_TABLE_ENABLE
+		CobDispatchTable::Install();
 #endif
 #ifdef TADR_DEBUG_PIPE
 		DebugPipeServer::Start();
@@ -295,12 +308,19 @@ bool APIENTRY DllMain(HINSTANCE hinst, unsigned long reason, void*)
 #if SHARE_ABUSE_GUARD
 		ShareGuard::Shutdown();
 #endif
+#if SHARE_PERCENT_ENABLE
+		SharePercent::Shutdown();
+#endif
+		UnitIdentity::Shutdown();
 #if TDRAW_EXTENDED_WEAPON_IDS
 		WeaponFiredExt::Shutdown();
 		WeaponIdOverflow::Shutdown();
 #endif
 #if REPAIR_RATE_FIX_ENABLE
 		RepairRateFix::Shutdown();
+#endif
+#if COB_DISPATCH_TABLE_ENABLE
+		CobDispatchTable::Shutdown();
 #endif
 		/* KillTimer(NULL, Timer);
 		KillTimer(NULL, DetectTimer); */

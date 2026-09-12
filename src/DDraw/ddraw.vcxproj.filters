@@ -295,6 +295,9 @@
     <ClCompile Include="RepairRateFix.cpp">
       <Filter>Source Files</Filter>
     </ClCompile>
+    <ClCompile Include="CobDispatchTable.cpp">
+      <Filter>Source Files</Filter>
+    </ClCompile>
     <ClCompile Include="TransportedExplosions.cpp">
       <Filter>Source Files</Filter>
     </ClCompile>
@@ -302,6 +305,9 @@
       <Filter>Source Files</Filter>
     </ClCompile>
     <ClCompile Include="GridClaimTieBreak.cpp">
+      <Filter>Source Files</Filter>
+    </ClCompile>
+    <ClCompile Include="SharePercent.cpp">
       <Filter>Source Files</Filter>
     </ClCompile>
     <ClCompile Include="LagSwitchGuard.cpp">
@@ -648,6 +654,9 @@
     <ClInclude Include="RepairRateFix.h">
       <Filter>Header Files</Filter>
     </ClInclude>
+    <ClInclude Include="CobDispatchTable.h">
+      <Filter>Header Files</Filter>
+    </ClInclude>
     <ClInclude Include="TransportedExplosions.h">
       <Filter>Header Files</Filter>
     </ClInclude>
@@ -655,6 +664,9 @@
       <Filter>Header Files</Filter>
     </ClInclude>
     <ClInclude Include="GridClaimTieBreak.h">
+      <Filter>Header Files</Filter>
+    </ClInclude>
+    <ClInclude Include="SharePercent.h">
       <Filter>Header Files</Filter>
     </ClInclude>
     <ClInclude Include="tafstatusexporter.h">
