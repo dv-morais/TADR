@@ -108,6 +108,17 @@
 #endif
 
 //
+// COB dispatch-table patch -- Class A (bit-identical, purely faster). See
+// ai-reference/simulation-performance/COB_DISPATCH_PROJECT.md and CLAUDE.md.
+// Escalation-only -- the splice window and every hardcoded address are
+// specific to that exact binary. Every config_*.h defines this explicitly;
+// this fallback is only for a future one that forgets to.
+//
+#ifndef COB_DISPATCH_TABLE_ENABLE
+#define COB_DISPATCH_TABLE_ENABLE 0
+#endif
+
+//
 // ReceiveWeaponFired: take the projectile-kind branch from the firing unit's own weapon slot
 // rather than from the weapon id in the packet.
 //
