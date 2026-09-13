@@ -23,7 +23,7 @@ namespace ChatLayout
 	void Install();
 	void Shutdown();
 
-	// True iff the hook is installed (renderer is `tadr` or `probe`).
+	// True iff the hook is installed (renderer is `tadr`).
 	bool Active();
 
 	// True iff the renderer is `tadr`. ChatBackdrop calls this to stand down

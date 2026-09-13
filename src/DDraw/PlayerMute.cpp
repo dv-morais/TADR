@@ -1,6 +1,8 @@
 #include "config.h"
 #include "PlayerMute.h"
 
+#if PLAYER_MUTE_ENABLE
+
 #include "tamem.h"
 #include "tafunctions.h"
 #include "iddrawsurface.h"
@@ -345,6 +347,19 @@ namespace
 			// the next game, and the engine does NOT clear the chat ring or
 			// the roster between games, so a carried-over mask would silence
 			// the wrong person.
+			//
+			// SyncSession() can call LocalNotice() on a genuine reset, which
+			// calls NewChatText() -- i.e. re-entering this same hooked
+			// function (0x00463CA0) from inside its own router. Safe: the
+			// hook framework's per-thread EnteredFlag_I makes the nested
+			// call skip PushChatProc entirely and fall straight through to
+			// TABugFix's stub and the original code, so it cannot clobber
+			// the outer call's saved register block or double-drop anything.
+			// The one odd consequence -- the nested pass clears the flag on
+			// its way out, so a third nesting could re-enter this router --
+			// terminates immediately regardless, since LocalNotice() always
+			// targets slot 10 (line ~339 above returns before SyncSession()
+			// is ever reached again).
 			SyncSession();
 			if (g_mask[slot] == 0)
 				return 0;                     // mask was stale and got cleared
@@ -437,7 +452,10 @@ void PlayerMute::Install()
 	}
 
 	ResetAll();
-	IDDrawSurface::OutptTxt("[PlayerMute] installed (.mute / .unmute are local only)");
+	if (g_chatHook || g_sendHook)
+		IDDrawSurface::OutptTxt("[PlayerMute] installed (.mute / .unmute are local only)");
+	else
+		IDDrawSurface::OutptTxt("[PlayerMute] not installed - both hook sites failed their byte check");
 }
 
 void PlayerMute::Shutdown()
@@ -551,3 +569,18 @@ void PlayerMute::LocalNotice(const char* msg)
 	// own filter never touches it.
 	NewChatText(const_cast<char*>(msg), 1, 0, (char)kSystemSlot);
 }
+
+#else  // !PLAYER_MUTE_ENABLE
+
+// whiteboard.cpp calls this unconditionally (it has no ini/compile-time
+// switch of its own). Every other PlayerMute:: entry point is only ever
+// called from inside this file or from ddraw.cpp's own
+// #if PLAYER_MUTE_ENABLE-gated Install()/Shutdown() call sites, so nothing
+// else needs a stub -- "always false" is exactly the behaviour a disabled
+// mod already had (the mask was permanently zero; nothing was ever
+// spliced), just without paying for the module at all now.
+namespace PlayerMute {
+bool IsMuted(int, Category) { return false; }
+}
+
+#endif // PLAYER_MUTE_ENABLE

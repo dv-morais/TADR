@@ -1561,4 +1561,3 @@ bool AlliesWhiteboard::IsInGameArea(LONG x, LONG y)
 	TAdynmemStruct *Ptr = *(TAdynmemStruct**)0x00511de8;
 	return x >= Ptr->GameSreen_Rect.left && y >= Ptr->GameSreen_Rect.top && y < Ptr->GameSreen_Rect.bottom;
 }
-

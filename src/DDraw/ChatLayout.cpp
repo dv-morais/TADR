@@ -50,6 +50,15 @@ namespace
 		}
 	}
 
+	// Checked at C++ static-init time, not lazily inside Install() -- same
+	// fix and same reasoning as PlayerMute.cpp's kPushChatBytesOk/
+	// kSendChatBytesOk (see that file for the regression this pattern was
+	// written to prevent). Nothing else currently hooks CHAT_DRAW_ADDR
+	// before ChatLayout::Install() runs, so this is precautionary today,
+	// not a live bug -- but Install()-time was exactly the wrong place to
+	// find that out.
+	const bool kChatDrawBytesOk = BytesMatch(CHAT_DRAW_ADDR, kExpectedChatDraw, sizeof(kExpectedChatDraw));
+
 	// Ring layout (same offsets as ChatBackdrop.cpp).
 	const unsigned OFF_CHAT_TEXT     = 0x12EF;
 	const unsigned CHAT_ENTRY_STRIDE = 0x48;
@@ -134,8 +143,14 @@ namespace
 	// While the chat compose prompt is open (TALK.GUI in the active GUI chain)
 	// the player column is drawn from the retained history at g_sbOffset
 	// (0 = live tail) instead of the live ring; the system column stays live.
-	bool           g_sbArmed  = false;
 	int            g_sbOffset = 0;
+	// Last frame's count of player-column lines available to scroll back
+	// through (sbN below) -- NOT the same as "history exists" (g_histCount):
+	// with ChatSplit=1 and a history that is entirely system-column lines,
+	// there is nothing for the player column to page through even though
+	// g_histCount > 0. Read by ScrollbackWheel to decide whether to consume
+	// the wheel event at all.
+	int            g_sbLastN  = 0;
 	int            g_sbPick[HIST_CAP];        // history indices of the player-column lines, newest-first
 
 	void HistAppend(const unsigned char* ringEntry)
@@ -478,11 +493,14 @@ namespace
 			Font_SetCurrent(comix);
 
 		// Walk back to the oldest still-visible entry: the whole 30-entry ring
-		// (ChatPosition stops throttling `textlines` once we take over); how
-		// many of those lines draw is decided per column below.
-		const int backSteps = (g_renderer == R_Tadr)
-			? CHAT_ENTRY_COUNT
-			: (textlines < CHAT_ENTRY_COUNT ? textlines : CHAT_ENTRY_COUNT);
+		// (ChatPosition stops throttling `textlines` once we take over -- see
+		// the sanity check above, which is the only remaining use of
+		// `textlines` here). WalkChat only ever runs while the hook is
+		// installed, i.e. g_renderer == R_Tadr (see Install()), so there is
+		// no engine-drawn-fallback case to walk back a shorter distance for.
+		// How many of these 30 lines actually draw is decided per column
+		// below.
+		const int backSteps = CHAT_ENTRY_COUNT;
 		int idx = freeIndex;
 		for (int n = 1; n < backSteps; ++n)
 		{
@@ -524,7 +542,7 @@ namespace
 		}
 		if (!sbArmed)
 			g_sbOffset = 0;
-		g_sbArmed = sbArmed;
+		g_sbLastN = sbN;
 
 		// Pre-pass: count visible lines per column, so an upward-growing player
 		// column can start high enough for its newest line to land on the anchor.
@@ -554,7 +572,7 @@ namespace
 		// Per-column line budget (tadr only): draw the newest lines of each
 		// column, trimming the oldest when it holds more than its ini cap
 		// (ChatLines / ChatSysLines) or than physically fits before the screen
-		// edge it grows toward. engine / probe leave plrShow == plrCount.
+		// edge it grows toward. engine leaves plrShow == plrCount.
 		int plrShow = plrCount, sysShow = sysCount;
 		int plrSkip = 0,        sysSkip = 0;
 		int capPlr = CHAT_ENTRY_COUNT, fitPlr = CHAT_ENTRY_COUNT;   // hoisted: reused by the scrollback block
@@ -815,7 +833,7 @@ void ChatLayout::Install()
 		return;
 	}
 
-	if (!BytesMatch(CHAT_DRAW_ADDR, kExpectedChatDraw, sizeof(kExpectedChatDraw)))
+	if (!kChatDrawBytesOk)
 	{
 		IDDrawSurface::OutptTxt("[ChatLayout] unexpected bytes at 0x00464060 - not installed");
 		return;
@@ -855,14 +873,21 @@ bool ChatLayout::TakingOver()
 
 bool ChatLayout::ScrollbackWheel(int wheelDeltaRaw)
 {
-	// Checks the engine directly rather than trusting g_sbArmed, which is
-	// only refreshed on a frame where WalkChat actually runs to completion --
-	// several early-outs above (bad ta/textlines/h/freeIndex) and the
-	// router's own SEH catch can all skip that update, and a stale `true`
-	// would keep swallowing the wheel event ahead of WheelZoom /
-	// WheelMoveMegaMap / build-rotate for good. Mirrors WalkChat's own
-	// "armed" condition (retained history exists and the prompt is open).
-	if (g_renderer != R_Tadr || g_histCount == 0)
+	// Checks the engine directly (ChatPromptOpen) rather than trusting a
+	// latch set once per frame: several early-outs in WalkChat (bad
+	// ta/textlines/h/freeIndex) and the router's own SEH catch can all skip
+	// a frame's update, and a stale `true` here would keep swallowing the
+	// wheel event ahead of WheelZoom / WheelMoveMegaMap / build-rotate for
+	// good. g_sbLastN is allowed to be one frame stale -- like g_sbOffset's
+	// own clamping below, a wrong value here just corrects itself next
+	// frame, and the live ChatPromptOpen() check is what actually bounds
+	// how long that staleness window can be.
+	//
+	// g_sbLastN, not g_histCount: with ChatSplit=1 and a history that is
+	// entirely system-column lines, g_histCount > 0 but there is nothing in
+	// the player column to scroll through, so the wheel should fall through
+	// to the megamap instead of being swallowed for no visible effect.
+	if (g_renderer != R_Tadr || g_sbLastN == 0)
 		return false;
 
 	unsigned char* ta = TaBase();
