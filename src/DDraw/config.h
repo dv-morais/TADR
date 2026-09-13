@@ -79,6 +79,20 @@
 #endif
 
 //
+// PlayerMute: the local, display-only `.mute` / `.unmute` typed command --
+// see PlayerMute.h. Splices Net_PushChatHudMessage @0x00463CA0 and
+// Chat_FormatAndSend @0x00463E50; touches no simulation state and needs no
+// version gate in principle (a runtime ini key would do), but every other
+// splice this codebase installs unconditionally on every config is either
+// engine-version-signature-checked (ChatPosition) or itself opt-in
+// (AlliedBuildQueueSync, AirCorpseFall) -- PlayerMute was neither. Gated the
+// same way as those: every config_*.h defines this explicitly.
+//
+#ifndef PLAYER_MUTE_ENABLE
+#define PLAYER_MUTE_ENABLE 0
+#endif
+
+//
 // LagSwitchGuard: freeze the local simulation while every remote peer is
 // silent, so a lag switch cannot buy the cheater invulnerable manoeuvring
 // time.  Defaulted on so a config_*.h that predates the flag keeps the

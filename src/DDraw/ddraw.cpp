@@ -28,6 +28,9 @@ using namespace std;
 #include "AutoTeam.h"
 #include "TakeClaim.h"
 #include "ChatBackdrop.h"
+#include "ChatPosition.h"
+#include "ChatLayout.h"
+#include "PlayerMute.h"
 #include "MultiplayerSchemaUnits.h"
 #include "UnitDefExtensions.h"
 #include "unitrotate.h"
@@ -214,6 +217,13 @@ bool APIENTRY DllMain(HINSTANCE hinst, unsigned long reason, void*)
 
 		StartPositions::GetInstance();
 		AutoTeam::Install();
+		// ChatPosition must go in before ChatBackdrop: the backdrop reads
+		// ChatPosition::X()/Y() to keep its box under the relocated text.
+		ChatPosition::Install();
+		ChatLayout::Install();   // after ChatPosition, before ChatBackdrop (checks Active())
+#if PLAYER_MUTE_ENABLE
+		PlayerMute::Install();
+#endif
 		ChatBackdrop::Install();
 		MultiplayerSchemaUnits::GetInstance();
 
@@ -286,6 +296,11 @@ bool APIENTRY DllMain(HINSTANCE hinst, unsigned long reason, void*)
 #ifdef TADR_DEBUG_PIPE
 		DebugPipeServer::Stop();
 #endif
+#if PLAYER_MUTE_ENABLE
+		PlayerMute::Shutdown();
+#endif
+		ChatLayout::Shutdown();
+		ChatPosition::Shutdown();
 		ReloadBars::Shutdown();
 		UnitStatusCounters::Shutdown();
 #if ALLIED_BUILD_QUEUE_ENABLE

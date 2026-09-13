@@ -19,6 +19,7 @@
 #include "unitrotate.h"
 #include "buildghost.h"
 #include "AlliedBuildQueueSync.h"
+#include "ChatLayout.h"
 
 #include "fullscreenminimap.h"
 #include "GUIExpand.h"
@@ -809,6 +810,12 @@ bool CTAHook::Message(HWND WinProcWnd, UINT Msg, WPARAM wParam, LPARAM lParam)
 				}
 				break;
 			case WM_MOUSEWHEEL:
+				// While chat scrollback is armed (compose prompt open) the
+				// wheel pages history, ahead of WheelZoom / WheelMoveMegaMap /
+				// the build-rotate gesture below. No-op when the prompt is closed.
+				if (ChatLayout::ScrollbackWheel((short)HIWORD(wParam)))
+					return true;
+
 				/*FootPrint += ((short)HIWORD(wParam))/120;
 				if(FootPrint>8)
 				FootPrint = 8;
