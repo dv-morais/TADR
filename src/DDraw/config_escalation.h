@@ -95,6 +95,20 @@
 #define COB_DISPATCH_TABLE_ENABLE 1
 
 //
+// BuildWeaponSlotGuard -- root-cause fix for the stockpile-weapon divide-by-zero
+// crash, plus a bounds check on the adjacent unchecked weapon-slot index. See
+// BuildWeaponSlotGuard.h for the full derivation and byte evidence.
+//
+// Escalation-only by construction -- every hardcoded address belongs to Escalation
+// GOLD 10.1/10.2's TotalA.exe specifically. config.h defaults this to 0 everywhere
+// else. Active by default here: this is a fix, not a diagnostic -- both the reload-
+// divisor clamp (Class A: only touches weapons that are already degenerate, bit-
+// identical otherwise) and the weapon-slot bounds check (Class B, but the DLL ships
+// with a new game version, so there is no mixed-client-version fleet to keep in
+// lockstep) are meant to be on for every player, not staged behind further review.
+#define BUILD_WEAPON_SLOT_GUARD_ENABLE 1
+
+//
 // Extended weapon IDs (>= 256)
 //
 // Installs WeaponIdOverflow (heap-backed weapon slots above TA's hard-coded

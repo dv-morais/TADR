@@ -289,6 +289,9 @@
     <ClCompile Include="CobDispatchTable.cpp">
       <Filter>Source Files</Filter>
     </ClCompile>
+    <ClCompile Include="BuildWeaponSlotGuard.cpp">
+      <Filter>Source Files</Filter>
+    </ClCompile>
     <ClCompile Include="TransportedExplosions.cpp">
       <Filter>Source Files</Filter>
     </ClCompile>
@@ -634,6 +637,9 @@
       <Filter>Header Files</Filter>
     </ClInclude>
     <ClInclude Include="CobDispatchTable.h">
+      <Filter>Header Files</Filter>
+    </ClInclude>
+    <ClInclude Include="BuildWeaponSlotGuard.h">
       <Filter>Header Files</Filter>
     </ClInclude>
     <ClInclude Include="TransportedExplosions.h">

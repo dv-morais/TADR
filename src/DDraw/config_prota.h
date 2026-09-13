@@ -61,6 +61,15 @@
 #define COB_DISPATCH_TABLE_ENABLE 0
 
 //
+// BuildWeaponSlotGuard -- stockpile-weapon divide-by-zero fix + weapon-slot bounds
+// check.
+//
+// See BuildWeaponSlotGuard.h / config_escalation.h -- every hardcoded address is
+// specific to Escalation GOLD 10.1/10.2's TotalA.exe, so this stays off here unless
+// someone re-verifies it against this config's own exe.
+#define BUILD_WEAPON_SLOT_GUARD_ENABLE 0
+
+//
 // Off-map aircraft
 //
 // Width, in map tiles (16 world units each), of the band outside the map where aircraft can

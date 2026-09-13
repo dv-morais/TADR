@@ -119,6 +119,19 @@
 #endif
 
 //
+// BuildWeaponSlotGuard -- fixes the stockpile ("Nanolathing") divide-by-zero crash
+// (a weapon with stockpile=1 and an absent/zero reloadtime divides by zero in both
+// Unit_GetLinkedBuildWeaponPercent and MissionTick_BuildWeapon) and bounds-checks the
+// adjacent unchecked weapon-slot index in the same two functions. See
+// BuildWeaponSlotGuard.h for the full derivation. Escalation-only -- every hardcoded
+// address is specific to that exact binary. Every config_*.h defines this explicitly;
+// this fallback is only for a future one that forgets to.
+//
+#ifndef BUILD_WEAPON_SLOT_GUARD_ENABLE
+#define BUILD_WEAPON_SLOT_GUARD_ENABLE 0
+#endif
+
+//
 // ReceiveWeaponFired: take the projectile-kind branch from the firing unit's own weapon slot
 // rather than from the weapon id in the packet.
 //

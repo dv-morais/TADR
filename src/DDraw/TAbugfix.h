@@ -133,6 +133,10 @@ void InstallCrashTrace();
                                     //             b=walked live count c=nNumUnits d=GameTime
                                     //          a=slot|0x8000     -> persistent peer disagreement:
                                     //             b=(myLive<<16)|ownerLive c=digest xor d=GameTime
+// ---- BuildWeaponSlotGuard breadcrumbs (see BuildWeaponSlotGuard.cpp) ----------
+#define TRACE_CAT_BWSG 0x42575347u  // 'BWSG' : rejected BuildWeapon weapon-slot index
+                                    //          a=order ptr b=idx (0xFFFFFFFF if order was
+                                    //          unreadable) c=readable(0/1) d=0 sim, 1 hud
 void CrashTrace_RecordEvent(unsigned cat, unsigned a, unsigned b, unsigned c, unsigned d);
 // RECV-style breadcrumb that also captures the first bytes of a packet buffer.
 void CrashTrace_RecordPacket(unsigned cat, unsigned fromDpid, unsigned size,
