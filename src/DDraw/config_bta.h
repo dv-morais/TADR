@@ -65,9 +65,11 @@
 // BuildWeaponSlotGuard -- stockpile-weapon divide-by-zero fix + weapon-slot bounds
 // check.
 //
-// See BuildWeaponSlotGuard.h / config_escalation.h -- every hardcoded address is
-// specific to Escalation GOLD 10.1/10.2's TotalA.exe, so this stays off here unless
-// someone re-verifies it against this config's own exe.
+// See BuildWeaponSlotGuard.h / config_escalation.h. Corrected 2026-09-14: earlier text
+// here said these addresses were Escalation-specific -- PR #26's review disproved that
+// (all six signatures match byte-for-byte on all seven shipped TotalA.exe builds, this
+// is stock TA engine code). Still off here because this project has not independently
+// re-verified that itself, not because the addresses are believed to differ.
 #define BUILD_WEAPON_SLOT_GUARD_ENABLE 0
 
 //

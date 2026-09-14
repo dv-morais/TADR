@@ -1,12 +1,72 @@
 #pragma once
 
-// BuildWeaponSlotGuard -- fixes the stockpile ("Nanolathing") divide-by-zero crash and
-// a separate, adjacent out-of-bounds bug in the same order type. Full derivation, byte
-// evidence and test plan: ai-reference/build-weapon-slot-guard/CLAUDE.md and the project
-// plan referenced from it.
+// BuildWeaponSlotGuard -- fixes the stockpile ("Nanolathing") build-percent
+// divide-by-zero crash and a separate, adjacent out-of-bounds bug in the same order
+// type. Full derivation, byte evidence and test plan: local project notes referenced
+// from the PR; PR #26 (Axle1975 review, 2026-09-14) supplied the real root cause and
+// is cited throughout this file by section number below.
 //
 // ---------------------------------------------------------------------------------
-// FIX 1 -- root cause. `[bin]` VERIFIED.
+// ROOT CAUSE, corrected 2026-09-14. `[bin]` VERIFIED against real production crashes.
+// ---------------------------------------------------------------------------------
+// This module originally shipped believing a degenerate stockpile weapon's `reloadtime`
+// TDF value was the cause (see "FIX 1" below) and treated the weapon-slot index bug as
+// unconfirmed insurance (see "FIX 2"). Both binary claims were and are correct; the
+// causal claim was not. PR #26's review recovered FIVE independent production crashes
+// at the exact fault (0x00439D65, `idiv esi`, `esi==0`) from real `game_logs` and, for
+// every one, reconstructed the faulting `WeaponStruct*` (`ecx` at the fault, recovered
+// via `ebp`'s known displacement from a static viewport-table base -- see the review
+// for the arithmetic). **All five are `&WeaponsTypedefArray[0]`** -- TA's own permanent
+// "no weapon" sentinel entry -- not a weapon with a bad TDF, and not an out-of-range
+// index either (the resolved pointer was a perfectly valid array entry).
+//
+// The real mechanism, re-verified against this project's own binary, not merely taken
+// on the review's word:
+//   - `LoadUNITINFO` (0x0042CDE3-0x0042CE0C) resolves each of a unit type's three
+//     weapon names; on a failed/absent lookup it falls back to `&WeaponsTypedefArray[0]`
+//     (`lea esi,[eax+0x2CF3]` then `mov eax,esi` when the lookup returned 0). So every
+//     unarmed weapon slot on every unit type points at entry 0, always.
+//   - `LoadWeapons_Tdf` (0x0042E31C) initialises the whole 256-entry array with
+//     `ID=index` and an empty name; entry 0 is NEVER subsequently parsed from any TDF.
+//     Its `reloadtime` (+0xE4) is therefore 0 by construction, forever, in every mod --
+//     "FIX 1" below cannot touch it: that fix only runs from inside the TDF loader, and
+//     the sentinel never passes through the TDF loader.
+//   - `UNITS_StartWeaponsScripts` (0x0049E070) copies `UNITINFO::weaponN` straight into
+//     `UnitWeapons[N].p_Weapon`, so `p_Weapon` is a pure function of the LOCAL unit
+//     type. If this client's copy of a unit has the wrong type, and a legitimately
+//     issued order references a weapon slot that is unarmed on this client's (wrong)
+//     copy, `p_Weapon == &WeaponsTypedefArray[0]` and the HUD divides by zero the
+//     moment anyone inspects that unit.
+//   - `DrawUnitBottomState` (0x0046A860, reaches this whole call chain) filters the
+//     displayed unit by `UnitINFOID != 0` and LOS only -- there is NO owner check --
+//     so the crashing unit can be, and for this mechanism must be, a REMOTE player's
+//     unit. This is why the crash killed only 2 of 9 players in one real game: a bad
+//     TDF would kill everyone who inspects that weapon; a wrong local copy of one
+//     specific remote unit kills only the client(s) whose copy diverged.
+//   - This is the exact mechanism `tamem.h`'s `WeaponStruct::weaponvelocity` comment
+//     (the neighbouring `+0x68` field) and `config.h`'s `WEAPONFIRE_DISPATCH_FROM_SLOT`
+//     block already document, for a different consumer of the same sentinel. It should
+//     have been connected to this bug from the start via a sibling-defect scan and
+//     was not -- recorded here as an accountability note, not just a citation.
+//
+// This is unit-identity divergence, the same family `UnitIdentity.{h,cpp}` exists to
+// diagnose and repair. It is a per-client state bug, not a data-authoring bug, and no
+// TDF edit can fix it.
+//
+// ---------------------------------------------------------------------------------
+// THE FIX for the above: WeaponDivisorIsSafe(), called from both Fix 2 routers below.
+// ---------------------------------------------------------------------------------
+// Both routers already resolve the order and its weapon-slot index at the point where
+// they can cheaply also resolve the actual weapon pointer and check the value about to
+// be divided by, directly, regardless of why it might be zero. This covers the sentinel
+// (this bug's real, evidenced cause), a genuinely degenerate TDF weapon (FIX 1's
+// target, now redundant but harmless), and any other future way this field could end
+// up zero, all in one check, at the one place that actually matters: immediately
+// before the value is used. See the `WeaponDivisorIsSafe` comment in the .cpp for the
+// exact mechanism and the self-test that exercises this precise scenario.
+//
+// ---------------------------------------------------------------------------------
+// FIX 1 -- kept as insurance, NOT the fix for the crashes above. `[bin]` VERIFIED.
 // ---------------------------------------------------------------------------------
 // WeaponDef_LoadTdfProperties @0x0042E440 stores a weapon's `reloadtime` TDF key as
 // `WeaponStruct+0xE4 = (WORD)(int)(reloadtime * 30.0)` (0x0042E54B-0x0042E561) and its
@@ -14,44 +74,22 @@
 // checks that a stockpile weapon actually got a usable reloadtime: an absent key
 // (TA's TDF getters default to 0), an explicit 0/negative, or a reloadtime whose *30
 // lands on an exact multiple of 65536 (the `mov word` truncation, smallest case
-// ~2184.53s) all produce `WeaponStruct+0xE4 == 0`.
+// ~2184.53s) all produce `WeaponStruct+0xE4 == 0`. This clamps that field from 0 to 1
+// (the smallest non-degenerate value) once, at the moment TDF loading finishes for a
+// weapon that is already degenerate (stockpile set AND the stored divisor is 0). A
+// correctly authored weapon is untouched, bit for bit.
 //
-// Every consumer of that field divides by it unchecked:
-//   - Unit_GetLinkedBuildWeaponPercent @0x00439D20 does `idiv esi` with esi==0 ->
-//     EXCEPTION_INT_DIVIDE_BY_ZERO at 0x00439D65. This is the crash that started this
-//     investigation.
-//   - MissionTick_BuildWeapon @0x00402B70 divides by the same zero four times in x87
-//     (0x402C0D/1E/32/4A). It currently survives only because #Z/#I are masked by
-//     default and two INF/NaN results happen to cancel -- a coincidence, not a guard,
-//     and contingent on the FPU control word.
-//   - Gameplay: the shot completes on its first tick, so the weapon stockpiles to its
-//     200-shot cap almost immediately and the order then persists with a ~10s
-//     recheck window -- so selecting a unit carrying such a weapon is what kills you,
-//     repeatedly, not a one-tick fluke.
-//
-// FIX: clamp WeaponStruct+0xE4 from 0 to 1 (the smallest non-degenerate value) at the
-// moment weapon-TDF loading finishes, but ONLY for weapons that are already degenerate
-// (stockpile set AND the stored divisor is 0). A correctly authored weapon is untouched,
-// bit for bit. This single write fixes every consumer above at once because it removes
-// the zero at its source instead of defending each division separately. Logged, with
-// the weapon named, so the real fix (correcting that weapon's TDF) is visible to
-// whoever owns the data -- this clamp is a safety net, not the intended repair.
-//
-// Hook site: 0x0042F313, the function's own epilogue (`push ebp; call 0x49E010`),
-// which runs after BOTH reloadtime and stockpile have already been stored. VERIFIED
-// this session, not merely assumed: EBP (the WeaponStruct* this whole function
-// operates on) is written exactly once, at 0x0042E489, and never reassigned anywhere
-// between there and 0x0042F313 -- confirmed by disassembling the complete function and
-// finding every instruction that writes EBP. The loop back-edge at 0x0042F30D ->
-// 0x0042EFC3 does not touch it either. So this hook always sees the fully-parsed
-// pointer for whichever weapon just finished loading.
-//
-// D1 (ai-reference/tools/verification/scan_stockpile_weapons.py) found ZERO weapons
-// matching this shape in the operator's live Escalation data (240 weapons scanned,
-// all ten stockpile weapons have healthy explicit reloadtime values) -- so this fix is
-// confirmed correct and inert for that dataset, not confirmed as the cause of the
-// original crash. It stays in as free, zero-behaviour-change hardening for any other
-// mod's data (or a future edit) that hits the same authoring mistake.
+// An offline scan of the operator's live Escalation data found zero weapons matching
+// this shape (240 weapons scanned, all ten stockpile weapons have healthy explicit
+// reloadtime values) -- consistent with, not contradicted by, this fix never being the
+// explanation for a real crash. It stays in as free, zero-behaviour-change hardening
+// for any mod's data (or a future edit) that hits this authoring mistake for real; it
+// is not required for, and does not explain, any crash this module has actual evidence
+// for. Hook site: 0x0042F313, the function's own epilogue (`push ebp; call 0x49E010`),
+// which runs after both fields are stored. EBP (the WeaponStruct* this function
+// operates on) is written exactly once, at 0x0042E489, and never reassigned before
+// 0x0042F313 -- confirmed by disassembling the complete function and enumerating every
+// instruction that writes EBP.
 //
 // ---------------------------------------------------------------------------------
 // FIX 2 -- a separate, adjacent defect found in the same code paths. `[bin]` VERIFIED.
@@ -75,13 +113,13 @@
 // clamp on the field -- a global clamp would silently reinterpret data other order
 // types depend on. Scoping the check to these two call sites is what makes it safe.
 //
-// No evidence this has ever fired live -- D1 cannot test it (it is a runtime state
-// question, not a TDF data question) and the operator does not remember which unit
-// was selected at the time of the crash. Included anyway per the operator's
-// judgement: an out-of-bounds write into position and pointer fields is
-// game-breaking regardless of observed frequency, and the fix is free (Class B is
-// acceptable here -- the DLL ships with a new game version, so there is no mixed
-// client-version fleet to keep in lockstep).
+// This is a real, independent hazard confirmed correct by PR #26's review -- but it
+// is NOT what caused the five known production crashes (the fault is at the `idiv`,
+// not at the earlier weapon-slot dereference, and `ecx` at the fault was a valid
+// array entry every time; an out-of-range index overwhelmingly produces an
+// ACCESS_VIOLATION at 0x00439D5D instead). Kept as a genuine guard on a genuinely
+// unchecked read/write; the claim that it might explain the original crash is
+// withdrawn.
 //
 // FIX: bounds-check the index at the top of each function and, if it is out of range
 // (or the order pointer itself is not safely readable), redirect to that SAME
@@ -95,12 +133,25 @@
 //     exhausted.
 // Both trigger paths log (throttled) and drop a CrashTrace_RecordEvent breadcrumb --
 // if this ever fires live, that is the discovery of a second real bug and it must be
-// visible, not silently absorbed.
+// visible, not silently absorbed. The same two hook sites and bail-out targets are
+// reused, unmodified, for the point-of-use divisor check above -- no new hook, no new
+// patch surface, only new logic inside the routers already installed here.
+//
+// A note on the relative CALL stolen by the Fix 1 hook (`call 0x49E010`): copying a
+// relative `E8` displacement into a trampoline reads like a bug until you check that
+// it is relocated. `X86RedirectOpcodeToNewBase` (hook/etc.cpp, `case 0xe8`) does
+// relocate `E8` displacements whose target lands outside the stolen byte range, so
+// this is safe -- re-verified by reading that code, not assumed.
 //
 // ---------------------------------------------------------------------------------
 // Gating: BUILD_WEAPON_SLOT_GUARD_ENABLE (config.h / config_*.h). 1 on Escalation,
-// 0 elsewhere -- every hardcoded address here is specific to Escalation GOLD
-// 10.1/10.2's TotalA.exe. Disabled arm still identifies itself in the log so a
+// 0 elsewhere. Corrected 2026-09-14: this used to say every address here was specific
+// to Escalation's TotalA.exe. That was not established and PR #26's review disproved
+// it -- all six hook/bail-out signatures match byte-for-byte on all seven shipped
+// TotalA.exe builds (Escalation included), because this is stock TA engine code no
+// mod has patched. This project has not independently re-verified that itself, so the
+// gate stays Escalation-only until it does -- a staged rollout, not a belief that the
+// addresses differ elsewhere. Disabled arm still identifies itself in the log so a
 // module that failed its own byte check cannot be mistaken for one compiled out.
 // ---------------------------------------------------------------------------------
 

@@ -19,6 +19,16 @@ namespace
 	// elsewhere -- these addresses hold on both). The install-time byte check below is
 	// what makes trusting these addresses on an unverified build safe rather than a
 	// guess: a mismatch disables the module instead of patching the wrong bytes.
+	//
+	// Corrected 2026-09-14: this project only tested against Escalation's exe, and
+	// earlier comments here said the addresses were Escalation-specific as if that
+	// were established. It was not -- PR #26's review independently re-derived every
+	// signature below against all seven shipped TotalA.exe builds (tacc/taesc/
+	// tamayhem/tatw/tavmod/tazero/GOG) and found all of them byte-identical, because
+	// this is stock TA engine code no mod patches. This project has not re-run that
+	// verification itself, so the gate (config.h et al.) stays Escalation-only -- not
+	// because the addresses are believed to differ, but because nobody on this side
+	// has checked.
 
 	// ---- Fix 1: clamp the reload divisor at weapon-load time ----------------------
 	//
@@ -54,7 +64,12 @@ namespace
 	const DWORD kMaxValidWeaponSlot = 2u;
 
 	// Sim: MissionTick_BuildWeapon @0x00402B70.
-	//   00402B7F  8B 46 36          mov eax,[esi+0x36]   ; esi = UnitOrdersStruct*
+	//   00402B73  8B 54 24 0C       mov edx,[esp+0xC]    ; edx = UnitStruct* (set once,
+	//                                                       never reassigned before the
+	//                                                       hook fires -- re-verified this
+	//                                                       session, see WeaponDivisorIsSafe)
+	//   00402B7A  8B 74 24 1C       mov esi,[esp+0x1C]   ; esi = UnitOrdersStruct*
+	//   00402B7F  8B 46 36          mov eax,[esi+0x36]   ; <- hook site
 	//   00402B82  8B C8             mov ecx,eax
 	//   00402B84  C1 E1 03          shl ecx,3            ; (only the first byte, 0xC1, is
 	//                                                       inside the requested 6-byte
@@ -67,6 +82,12 @@ namespace
 	//                                                       own; re-verified by reading
 	//                                                       that code this session, not
 	//                                                       assumed)
+	//   00402B87  2B C8             sub ecx,eax          ; ecx = idx*7 (outside the stolen
+	//                                                       window, but this is the
+	//                                                       instruction that makes the
+	//                                                       stride 0x1C, not 0x20 -- PR #26
+	//                                                       review nit: this line was
+	//                                                       missing from this listing)
 	// Must sit before 0x00402B89, the unconditional `mov edi,[edx+ecx*4+0x10]` weapon load.
 	const DWORD kFix2aHookAddr = 0x00402B7Fu;
 	const DWORD kFix2aHookLen  = 6u;
@@ -99,8 +120,53 @@ namespace
 	const DWORD kFix2bBailoutAddr = 0x00439D6Bu;
 	const BYTE  kFix2bBailoutExpectedBytes[6] = { 0x33, 0xC0, 0x5E, 0xC2, 0x04, 0x00 };
 
+	// ---- Fix 2, extended 2026-09-14: check the divisor itself, not just the index ------
+	//
+	// PR #26 review (Axle1975) recovered FIVE independent production crashes at the HUD's
+	// faulting instruction (0x00439D65) from real `game_logs` and reconstructed the
+	// faulting WeaponStruct* in every one: all five are `&WeaponsTypedefArray[0]` -- TA's
+	// own permanent "no weapon" sentinel entry, not a degenerate stockpile TDF weapon and
+	// not an out-of-range index. `LoadUNITINFO` (0x0042CDE3-0x0042CE0C, re-verified this
+	// session by disassembly) falls every unarmed weapon slot back to that exact entry --
+	// `lea esi,[eax+0x2CF3]` is `&WeaponsTypedefArray[0]`, and `mov eax,esi` after a failed
+	// name lookup is the fallback -- and `UNITS_StartWeaponsScripts` (0x0049E070) copies it
+	// straight into `UnitWeapons[n].p_Weapon` for any unit type whose slot n has no weapon.
+	// The sentinel's `reloadtime` (+0xE4) is 0 by construction: `LoadWeapons_Tdf`
+	// (0x0042E31C) initialises the whole 256-entry array with `ID=index` and an empty
+	// name, and it is never subsequently parsed from any TDF, so Fix 1's clamp -- which
+	// only ever runs from inside the TDF loader -- can never reach it.
+	//
+	// This is the exact mechanism `tamem.h`'s `WeaponStruct::weaponvelocity` comment (the
+	// neighbouring `+0x68` field, already `#include`d by this file) and `config.h`'s
+	// `WEAPONFIRE_DISPATCH_FROM_SLOT` block already document: a unit-identity divergence
+	// (this client's local copy of a remote unit has the wrong type) makes a legitimately
+	// issued order reference a weapon slot that, locally, is unarmed. `DrawUnitBottomState`
+	// (0x0046A860, which reaches this whole call chain) filters the displayed unit by
+	// `UnitINFOID != 0` and LOS only -- there is no owner check on this path -- so the unit
+	// under the cursor can be a remote player's unit whose identity has diverged on THIS
+	// client alone. That is why this crash kills only the diverged client and not everyone
+	// in the game: a genuinely bad TDF would kill every player who inspects that weapon; a
+	// wrong local copy kills only whoever's copy is wrong. (One prod game had 9 players in
+	// the bundle and exactly 2 crashed here -- consistent with a per-client cause, not a
+	// shared-data one.)
+	//
+	// Bounds-checking the index alone (above) does not catch this: the index is perfectly
+	// valid (0, 1, or 2) and the pointer it resolves to is perfectly readable -- entry 0 of
+	// a real, live, permanently-allocated array. The actual fix is to check the value this
+	// code is about to divide by, at the point of use, regardless of why it might be zero
+	// -- which also makes Fix 1's TDF-time clamp strictly redundant for anything this check
+	// already covers, though it is left in as free, zero-behaviour-change insurance for a
+	// genuinely misconfigured TDF (a case Fix 1 protects and this check also would, but
+	// only once such a weapon is actually the one being divided by).
+	const size_t kUnitWeaponSlotStride = 0x1Cu;  // 28: idx*28, tamem.h Weapon1/2/3 strides
+	const size_t kUnitWeaponSlotBase   = 0x10u;  // Weapon1@0x10 / Weapon2@0x2C / Weapon3@0x48
+	// WeaponDivisorIsSafe() itself is defined below, after SafeIsBadReadPtr (it calls
+	// it) -- see the definition just below that function for the full comment.
+
 	DWORD g_fix2aRejects = 0;
 	DWORD g_fix2bRejects = 0;
+	DWORD g_fix2aZeroDivisorRejects = 0;   // subset of g_fix2aRejects: index was VALID,
+	DWORD g_fix2bZeroDivisorRejects = 0;   // the resolved weapon's divisor was the problem
 	DWORD g_fix2aSane = 0;   // valid-index calls that fell through untouched
 	DWORD g_fix2bSane = 0;
 
@@ -111,6 +177,12 @@ namespace
 	// else INDETERMINATE -- the path was never exercised") is designed to catch.
 	// Matches the GetTickCount()-throttled idiom SoundLimitHeartbeat already uses in
 	// TABugFix.cpp for the same reason.
+	//
+	// PR #26 review nit: this used to be called only from the SANE branch of each
+	// router, so a session where every call was rejected (the exact scenario a
+	// heartbeat exists to make visible) never produced one -- inverting the comment's
+	// own intent. Both routers now call this unconditionally, on the sane path and the
+	// reject path alike; the 30s throttle below is what keeps it cheap either way.
 	DWORD g_lastHeartbeatMs = 0;
 	void MaybeHeartbeat()
 	{
@@ -119,9 +191,10 @@ namespace
 			return;
 		g_lastHeartbeatMs = now;
 		IDDrawSurface::OutptFmtTxt(
-			"[BuildWeaponSlotGuard][heartbeat] clamped=%lu sim(sane=%lu rejected=%lu) "
-			"hud(sane=%lu rejected=%lu)",
-			g_fix1Clamped, g_fix2aSane, g_fix2aRejects, g_fix2bSane, g_fix2bRejects);
+			"[BuildWeaponSlotGuard][heartbeat] clamped=%lu "
+			"sim(sane=%lu rejected=%lu zerodiv=%lu) hud(sane=%lu rejected=%lu zerodiv=%lu)",
+			g_fix1Clamped, g_fix2aSane, g_fix2aRejects, g_fix2aZeroDivisorRejects,
+			g_fix2bSane, g_fix2bRejects, g_fix2bZeroDivisorRejects);
 	}
 
 	// Matches the OrderDispatchShouldLog idiom in TABugFix.cpp: log the first 20
@@ -151,6 +224,30 @@ namespace
 		}
 	}
 
+	// True iff `unit`'s weapon at `idx` (idx already known to be in {0,1,2}) is safe to
+	// divide by: the slot resolves to a readable WeaponStruct* whose reload-tick total
+	// (+0xE4) is non-zero. False covers an unreadable pointer (the original index-
+	// corruption hazard) and a readable-but-zero divisor (the sentinel, or any other
+	// degenerate weapon) identically, because both produce the exact same crash at the
+	// exact same instruction and the fix -- do not use this weapon's number -- is the
+	// same either way. See the big comment above kUnitWeaponSlotStride for why this
+	// exists: PR #26's review matched this exact shape to five real production crashes.
+	bool WeaponDivisorIsSafe(DWORD unit, DWORD idx)
+	{
+		const DWORD slotAddr = unit + static_cast<DWORD>(kUnitWeaponSlotStride * idx) + kUnitWeaponSlotBase;
+		if (SafeIsBadReadPtr(reinterpret_cast<const void*>(slotAddr), sizeof(DWORD)))
+			return false;
+
+		const DWORD weapon = *reinterpret_cast<const DWORD*>(slotAddr);
+		if (SafeIsBadReadPtr(reinterpret_cast<const void*>(weapon),
+			kWeaponReloadTimeOffset + sizeof(WORD)))
+			return false;
+
+		const WORD divisor = *reinterpret_cast<const WORD*>(
+			reinterpret_cast<const BYTE*>(weapon) + kWeaponReloadTimeOffset);
+		return divisor != 0;
+	}
+
 	bool CheckBytes(DWORD address, const BYTE* expected, size_t len, const char* what)
 	{
 		if (std::memcmp(reinterpret_cast<const void*>(address), expected, len) == 0)
@@ -167,6 +264,16 @@ namespace
 	// returns 0 (never redirects): this fix only ever writes one field, it never
 	// changes control flow, so the original stolen bytes always replay exactly as
 	// vanilla intended.
+	//
+	// Corrected 2026-09-14 (PR #26 review): this is NOT what fixed the production
+	// crashes this module was built for. It cannot be -- WeaponsTypedefArray[0], the
+	// weapon every real crash divided by, never passes through this function at all
+	// (it is a reserved sentinel, initialised directly by LoadWeapons_Tdf, never
+	// parsed) and its WeaponTypeMask is 0, so this router would skip it even if it
+	// did. Kept as free, zero-behaviour-change insurance against a genuinely
+	// misconfigured stockpile weapon's TDF -- a real, if so-far unobserved, mistake
+	// this still catches. The fix for the actual observed crashes is
+	// WeaponDivisorIsSafe, below, called from both Fix 2 routers.
 	// ---------------------------------------------------------------------------
 	int __stdcall Fix1WeaponLoadEpilogueProc(PInlineX86StackBuffer buf)
 	{
@@ -203,10 +310,14 @@ namespace
 	}
 
 	// ---------------------------------------------------------------------------
-	// Fix 2 routers -- one per consumer. Both share the same predicate: an order
-	// pointer that is not safely readable, or a BuildUnitID outside {0,1,2}, is
-	// treated identically -- redirect to that function's own existing bail-out
-	// rather than let anything dereference an out-of-range slot.
+	// Fix 2 routers -- one per consumer. Two predicates, checked in order, either of
+	// which redirects to that function's own existing bail-out: (1) the order pointer
+	// is not safely readable, or its BuildUnitID is outside {0,1,2} -- the original
+	// out-of-bounds-read/write hazard; (2) the index IS valid but the weapon it
+	// resolves to has a zero reload divisor -- the sentinel/degenerate-weapon hazard
+	// PR #26's review found in five real production crashes (see the big comment
+	// above WeaponDivisorIsSafe). (2) is only ever evaluated once (1) has already
+	// passed, so a bad index never drives an out-of-range unit+idx*28 computation.
 	// ---------------------------------------------------------------------------
 	int __stdcall Fix2aSimBoundsProc(PInlineX86StackBuffer buf)
 	{
@@ -215,8 +326,13 @@ namespace
 		const bool readable = !SafeIsBadReadPtr(
 			order, offsetof(UnitOrdersStruct, BuildUnitID) + sizeof(DWORD));
 		const DWORD idx = readable ? order->BuildUnitID : 0xFFFFFFFFu;
+		const bool indexOk = readable && idx <= kMaxValidWeaponSlot;
+		// buf->Edx = unit pointer at this hook site -- re-verified 2026-09-14 by
+		// disassembling 0x00402B70..0x00402B7F: set once at 0x00402B73 from [esp+0xC],
+		// never reassigned before the hook fires (see the site comment above).
+		const bool divisorOk = indexOk && WeaponDivisorIsSafe(buf->Edx, idx);
 
-		if (readable && idx <= kMaxValidWeaponSlot)
+		if (indexOk && divisorOk)
 		{
 			++g_fix2aSane;
 			MaybeHeartbeat();
@@ -224,16 +340,18 @@ namespace
 		}
 
 		++g_fix2aRejects;
+		if (indexOk) ++g_fix2aZeroDivisorRejects;
+		MaybeHeartbeat();
 		CrashTrace_RecordEvent(TRACE_CAT_BWSG, reinterpret_cast<DWORD>(order), idx,
 			readable ? 1u : 0u, 0);
 		if (ShouldLog(g_fix2aRejects))
 		{
 			IDDrawSurface::OutptFmtTxt(
 				"[BuildWeaponSlotGuard] sim: BAD weapon slot order=%08X readable=%d "
-				"idx=%lu -- bailing out to 0x%08X instead of an out-of-bounds unit read/"
-				"write (#%lu)",
-				reinterpret_cast<DWORD>(order), (int)readable, idx, kFix2aBailoutAddr,
-				g_fix2aRejects);
+				"idx=%lu reason=%s -- bailing out to 0x%08X instead of an out-of-bounds "
+				"unit read/write or a divide by zero (#%lu)",
+				reinterpret_cast<DWORD>(order), (int)readable, idx,
+				indexOk ? "zeroDivisor" : "badIndex", kFix2aBailoutAddr, g_fix2aRejects);
 		}
 
 		buf->rtnAddr_Pvoid = reinterpret_cast<LPVOID>(kFix2aBailoutAddr);
@@ -247,8 +365,13 @@ namespace
 		const bool readable = !SafeIsBadReadPtr(
 			order, offsetof(UnitOrdersStruct, BuildUnitID) + sizeof(DWORD));
 		const DWORD idx = readable ? order->BuildUnitID : 0xFFFFFFFFu;
+		const bool indexOk = readable && idx <= kMaxValidWeaponSlot;
+		// buf->Edx = unit pointer at this hook site -- re-verified 2026-09-14 by
+		// disassembling 0x00439D20..0x00439D41: set once at 0x00439D20 from [esp+4],
+		// never reassigned before the hook fires.
+		const bool divisorOk = indexOk && WeaponDivisorIsSafe(buf->Edx, idx);
 
-		if (readable && idx <= kMaxValidWeaponSlot)
+		if (indexOk && divisorOk)
 		{
 			++g_fix2bSane;
 			MaybeHeartbeat();
@@ -256,16 +379,18 @@ namespace
 		}
 
 		++g_fix2bRejects;
+		if (indexOk) ++g_fix2bZeroDivisorRejects;
+		MaybeHeartbeat();
 		CrashTrace_RecordEvent(TRACE_CAT_BWSG, reinterpret_cast<DWORD>(order), idx,
 			readable ? 1u : 0u, 1);
 		if (ShouldLog(g_fix2bRejects))
 		{
 			IDDrawSurface::OutptFmtTxt(
 				"[BuildWeaponSlotGuard] hud: BAD weapon slot order=%08X readable=%d "
-				"idx=%lu -- bailing out to 0x%08X instead of reading garbage as a "
-				"WeaponStruct* (#%lu)",
-				reinterpret_cast<DWORD>(order), (int)readable, idx, kFix2bBailoutAddr,
-				g_fix2bRejects);
+				"idx=%lu reason=%s -- bailing out to 0x%08X instead of reading garbage "
+				"as a WeaponStruct* or dividing by zero (#%lu)",
+				reinterpret_cast<DWORD>(order), (int)readable, idx,
+				indexOk ? "zeroDivisor" : "badIndex", kFix2bBailoutAddr, g_fix2bRejects);
 		}
 
 		buf->rtnAddr_Pvoid = reinterpret_cast<LPVOID>(kFix2bBailoutAddr);
@@ -344,16 +469,36 @@ namespace
 
 	bool SelfTestFix2SlotBounds()
 	{
+		// Synthetic weapons: one healthy (nonzero divisor), one mimicking
+		// WeaponsTypedefArray[0] -- a perfectly readable, valid WeaponStruct whose
+		// +0xE4 is 0. This is the EXACT shape PR #26's review found in all five real
+		// production crashes: the index is valid, the pointer is valid, only the
+		// divisor is zero.
+		WeaponStruct healthyWeapon;
+		std::memset(&healthyWeapon, 0, sizeof(healthyWeapon));
+		*reinterpret_cast<WORD*>(reinterpret_cast<BYTE*>(&healthyWeapon) + kWeaponReloadTimeOffset) = 100;
+
+		WeaponStruct sentinelWeapon;
+		std::memset(&sentinelWeapon, 0, sizeof(sentinelWeapon));   // +0xE4 stays 0
+
+		// Synthetic unit: only the three weapon-slot pointers matter here.
+		BYTE unit[0x60];
+		std::memset(unit, 0, sizeof(unit));
+		*reinterpret_cast<WeaponStruct**>(unit + 0x10) = &healthyWeapon;   // slot 0
+		*reinterpret_cast<WeaponStruct**>(unit + 0x2C) = &healthyWeapon;   // slot 1
+		*reinterpret_cast<WeaponStruct**>(unit + 0x48) = &sentinelWeapon;  // slot 2
+
 		UnitOrdersStruct order;
 		std::memset(&order, 0, sizeof(order));
 
 		InlineX86StackBuffer buf;
 		std::memset(&buf, 0, sizeof(buf));
+		buf.Edx = reinterpret_cast<DWORD>(unit);
 
 		bool ok = true;
 
-		// Valid indices 0,1,2, through BOTH consumers -> always fall through untouched.
-		for (DWORD idx = 0; idx <= kMaxValidWeaponSlot; ++idx)
+		// Slots 0 and 1: valid index, healthy weapon -> fall through untouched.
+		for (DWORD idx = 0; idx <= 1; ++idx)
 		{
 			order.BuildUnitID = idx;
 
@@ -368,17 +513,42 @@ namespace
 			ok = ok && (rcHud == 0) && (buf.rtnAddr_Pvoid == NULL);
 		}
 
+		// Slot 2: valid index, but the resolved weapon's divisor is 0 -- the sentinel
+		// shape. Must redirect, NOT fall through, even though the index itself is
+		// perfectly valid. This is the exact case Fix 2 could not catch before the
+		// 2026-09-14 fix, and the exact case that killed all five real players.
+		order.BuildUnitID = 2;
+
+		buf.Esi = reinterpret_cast<DWORD>(&order);
+		buf.rtnAddr_Pvoid = NULL;
+		DWORD beforeZDa = g_fix2aZeroDivisorRejects;
+		int rcSimZ = Fix2aSimBoundsProc(&buf);
+		ok = ok && (rcSimZ == X86STRACKBUFFERCHANGE)
+			&& (buf.rtnAddr_Pvoid == reinterpret_cast<LPVOID>(kFix2aBailoutAddr))
+			&& (g_fix2aZeroDivisorRejects == beforeZDa + 1);
+
+		buf.Eax = reinterpret_cast<DWORD>(&order);
+		buf.rtnAddr_Pvoid = NULL;
+		DWORD beforeZDb = g_fix2bZeroDivisorRejects;
+		int rcHudZ = Fix2bHudBoundsProc(&buf);
+		ok = ok && (rcHudZ == X86STRACKBUFFERCHANGE)
+			&& (buf.rtnAddr_Pvoid == reinterpret_cast<LPVOID>(kFix2bBailoutAddr))
+			&& (g_fix2bZeroDivisorRejects == beforeZDb + 1);
+
 		// Bad index (the smallest out-of-range value, 3) -> redirect to the bailout,
-		// counted exactly once per consumer.
+		// counted exactly once per consumer, and NOT counted as a zero-divisor reject
+		// -- the index check must short-circuit before the weapon is ever resolved.
 		order.BuildUnitID = 3;
 
 		buf.Esi = reinterpret_cast<DWORD>(&order);
 		buf.rtnAddr_Pvoid = NULL;
 		DWORD before = g_fix2aRejects;
+		DWORD beforeZD = g_fix2aZeroDivisorRejects;
 		int rcSim = Fix2aSimBoundsProc(&buf);
 		ok = ok && (rcSim == X86STRACKBUFFERCHANGE)
 			&& (buf.rtnAddr_Pvoid == reinterpret_cast<LPVOID>(kFix2aBailoutAddr))
-			&& (g_fix2aRejects == before + 1);
+			&& (g_fix2aRejects == before + 1)
+			&& (g_fix2aZeroDivisorRejects == beforeZD);
 
 		buf.Eax = reinterpret_cast<DWORD>(&order);
 		buf.rtnAddr_Pvoid = NULL;
@@ -403,6 +573,17 @@ namespace
 		rcSim = Fix2aSimBoundsProc(&buf);
 		ok = ok && (rcSim == X86STRACKBUFFERCHANGE);
 
+		// A valid index but an unreadable unit pointer (buf.Edx = NULL) -> redirect,
+		// not a dereference. This is the "unreadable weapon slot" half of
+		// WeaponDivisorIsSafe, distinct from a readable-but-zero divisor.
+		buf.Edx = 0;
+		order.BuildUnitID = 0;
+		buf.Esi = reinterpret_cast<DWORD>(&order);
+		buf.rtnAddr_Pvoid = NULL;
+		rcSim = Fix2aSimBoundsProc(&buf);
+		ok = ok && (rcSim == X86STRACKBUFFERCHANGE);
+		buf.Edx = reinterpret_cast<DWORD>(unit);
+
 		return ok;
 	}
 
@@ -411,7 +592,8 @@ namespace
 		struct Case { bool passed; const char* name; };
 		const Case cases[] = {
 			{ SelfTestFix1Clamp(),      "Fix1 clamp/no-clamp predicate (4 sub-cases)" },
-			{ SelfTestFix2SlotBounds(), "Fix2 slot-bounds predicate, both consumers (valid/bad/huge/null)" },
+			{ SelfTestFix2SlotBounds(), "Fix2 slot-bounds + zero-divisor predicate, both consumers "
+			  "(healthy/sentinel-zero-divisor/bad/huge/null-order/null-unit)" },
 		};
 		const int total = sizeof(cases) / sizeof(cases[0]);
 		int passed = 0;
@@ -494,6 +676,8 @@ namespace BuildWeaponSlotGuard
 		g_fix1Clamped = 0;
 		g_fix2aRejects = 0;
 		g_fix2bRejects = 0;
+		g_fix2aZeroDivisorRejects = 0;
+		g_fix2bZeroDivisorRejects = 0;
 		g_fix2aSane = 0;
 		g_fix2bSane = 0;
 		g_lastHeartbeatMs = 0;

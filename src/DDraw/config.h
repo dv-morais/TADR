@@ -119,13 +119,22 @@
 #endif
 
 //
-// BuildWeaponSlotGuard -- fixes the stockpile ("Nanolathing") divide-by-zero crash
-// (a weapon with stockpile=1 and an absent/zero reloadtime divides by zero in both
-// Unit_GetLinkedBuildWeaponPercent and MissionTick_BuildWeapon) and bounds-checks the
-// adjacent unchecked weapon-slot index in the same two functions. See
-// BuildWeaponSlotGuard.h for the full derivation. Escalation-only -- every hardcoded
-// address is specific to that exact binary. Every config_*.h defines this explicitly;
-// this fallback is only for a future one that forgets to.
+// BuildWeaponSlotGuard -- fixes the stockpile ("Nanolathing") build-percent
+// divide-by-zero crash. Real cause (corrected 2026-09-14, PR #26 review): a
+// unit-identity divergence can make a legitimately-issued order reference a weapon
+// slot that is locally unarmed, resolving to WeaponsTypedefArray[0] -- TA's permanent
+// "no weapon" sentinel, whose reload divisor is 0 by construction. Both
+// Unit_GetLinkedBuildWeaponPercent and MissionTick_BuildWeapon divide by that field
+// unchecked; also bounds-checks the adjacent unchecked weapon-slot index in the same
+// two functions. See BuildWeaponSlotGuard.h for the full derivation.
+//
+// Gated to Escalation only -- this project has verified these addresses against
+// Escalation's TotalA.exe alone. PR #26's review found the same six hook/bail-out
+// signatures byte-identical on all seven shipped TotalA.exe builds (stock TA engine
+// code, not Escalation-specific), but this project has not re-run that verification
+// itself, so this stays a staged rollout rather than an assumption either way. Every
+// config_*.h defines this explicitly; this fallback is only for a future one that
+// forgets to.
 //
 #ifndef BUILD_WEAPON_SLOT_GUARD_ENABLE
 #define BUILD_WEAPON_SLOT_GUARD_ENABLE 0
