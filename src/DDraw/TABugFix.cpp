@@ -1143,6 +1143,21 @@ int __stdcall CrashFix004cbed5Proc(PInlineX86StackBuffer X)
 //                    ESI=OrderStruct*, unit at [Esp+0x18]   (5 POPs + RET 4)
 //   site 0x0043BB0F  MOV EDX,[0x00512344]  (6 bytes)  -> epilogue 0x0043BC57
 //                    ESI=OrderStruct*, EDI=UnitStruct*      (4 POPs + RET 4)
+//   site 0x0043A202  MOV ECX,[0x00512344]  (6 bytes)  -> resume 0x0043A21E
+//                    ESI=OrderStruct*, unit at ESI->Unit_ptr
+//
+// The third site (added 2026-09-15) is UnitScriptingData_CancelOrder's teardown
+// dispatch -- the one that re-entered Order_MobileBuild in the 2026-09-14 "venom"
+// crash. Without it a re-entrant dispatch appeared as an MBRE breadcrumb with no
+// matching "Order dispatch" row, which reads like the two views disagree.
+//
+// Two things differ from the other sites. Its bail-out is not the epilogue: the
+// call here is one optional notification (condition_mask bit 1), so resuming at
+// 0x0043A21E leaves the rest of the cancel to run. ESP matches at both addresses
+// (the argument pushes are balanced by the handler's RET 0xC). And it does NOT
+// stamp g_currentOrderUnit -- it runs nested inside another unit's live handler,
+// so stamping would mis-attribute that unit's nanolathe for the rest of the
+// outer dispatch.
 //
 // DEFAULT IS OBSERVE-ONLY -- WE WANT THE CRASH.
 // Bailing out would work (the epilogue targets above unwind cleanly, and this
@@ -1167,6 +1182,9 @@ static const unsigned OrderDispatchGuardMainAddr       = 0x0043b865;
 static const unsigned OrderDispatchGuardMainBailout    = 0x0043ba9c;
 static const unsigned OrderDispatchGuardBgAddr         = 0x0043bb0f;
 static const unsigned OrderDispatchGuardBgBailout      = 0x0043bc57;
+// "Bailout" here means "skip the notification call", not "unwind the function".
+static const unsigned OrderDispatchGuardTeardownAddr   = 0x0043a202;
+static const unsigned OrderDispatchGuardTeardownSkip   = 0x0043a21e;
 
 // Last few dispatches, kept OUTSIDE the breadcrumb ring on purpose: this path
 // runs once per order per unit per tick (~10k/s in a big game), which would
@@ -1205,12 +1223,6 @@ int   g_currentOrderUnitTick = -1;
 static int OrderDispatchGuardCommon(PInlineX86StackBuffer buf, DWORD unit,
                                     unsigned bailout, const char* which)
 {
-	{
-		const TAdynmemStruct* ta = *(TAdynmemStruct**)0x00511de8;
-		g_currentOrderUnit = unit;
-		g_currentOrderUnitTick = ta ? ta->GameTime : -1;
-	}
-
 	UnitOrdersStruct* order = (UnitOrdersStruct*)buf->Esi;
 
 	// The order pointer itself can already be freed memory. Probe only the 5
@@ -1282,19 +1294,40 @@ static int OrderDispatchGuardCommon(PInlineX86StackBuffer buf, DWORD unit,
 #endif
 }
 
+// Only the two top-level controllers publish the current unit; the teardown site
+// is nested inside one of them and must not overwrite the stamp.
+static void StampCurrentOrderUnit(DWORD unit)
+{
+	const TAdynmemStruct* ta = *(TAdynmemStruct**)0x00511de8;
+	g_currentOrderUnit = unit;
+	g_currentOrderUnitTick = ta ? ta->GameTime : -1;
+}
+
 int __stdcall OrderDispatchGuardMainProc(PInlineX86StackBuffer buf)
 {
 	// MainOrderStateController: unit_ptr is the stdcall arg at [Esp+0x18]
 	// (5 pushed regs + return address below it).
 	const DWORD* stackTop = (const DWORD*)buf->Esp;
 	DWORD unit = (stackTop && !SafeIsBadReadPtr(stackTop, 0x1c)) ? stackTop[6] : 0;
+	StampCurrentOrderUnit(unit);
 	return OrderDispatchGuardCommon(buf, unit, OrderDispatchGuardMainBailout, "main");
 }
 
 int __stdcall OrderDispatchGuardBgProc(PInlineX86StackBuffer buf)
 {
 	// BackgroundOrderStateController keeps unit_ptr in EDI across the loop.
+	StampCurrentOrderUnit(buf->Edi);
 	return OrderDispatchGuardCommon(buf, buf->Edi, OrderDispatchGuardBgBailout, "background");
+}
+
+int __stdcall OrderDispatchGuardTeardownProc(PInlineX86StackBuffer buf)
+{
+	// __fastcall, order in ESI since 0x0043A1F2; the unit is order->Unit_ptr, the
+	// same value the engine pushes at 0x0043A219. Probe first -- this whole guard
+	// exists because the order can be freed memory.
+	const UnitOrdersStruct* order = (const UnitOrdersStruct*)buf->Esi;
+	DWORD unit = (order && !SafeIsBadReadPtr(order, 0x12)) ? (DWORD)order->Unit_ptr : 0;
+	return OrderDispatchGuardCommon(buf, unit, OrderDispatchGuardTeardownSkip, "teardown");
 }
 
 // ============================================================================
@@ -2440,6 +2473,10 @@ TABugFixing::TABugFixing ()
 		OrderDispatchGuardMainAddr, 6, INLINE_5BYTESLAGGERJMP, OrderDispatchGuardMainProc));
 	OrderDispatchGuardBackground.reset(new InlineSingleHook(
 		OrderDispatchGuardBgAddr, 6, INLINE_5BYTESLAGGERJMP, OrderDispatchGuardBgProc));
+	// Same 6-byte MOV ECX,[0x00512344]; nothing branches into those bytes (the
+	// JZ at 0x0043A200 targets 0x0043A21E, past the end of the patch).
+	OrderDispatchGuardTeardown.reset(new InlineSingleHook(
+		OrderDispatchGuardTeardownAddr, 6, INLINE_5BYTESLAGGERJMP, OrderDispatchGuardTeardownProc));
 #if SOUND_INSTANCE_LIMIT_MS > 0
 	if (memcmp((const void*)SoundPlayHookAddr, SoundPlayBytes, SoundPlayHookLen) == 0)
 	{
@@ -2456,9 +2493,9 @@ TABugFixing::TABugFixing ()
 #endif
 
 	IDDrawSurface::OutptFmtTxt(
-		"[OrderDispatchGuard] installed at 0x%08X (main) and 0x%08X (background): "
-		"COBHandler_index + handler_fn checked, OBSERVE-ONLY (bailout=%d)",
-		OrderDispatchGuardMainAddr, OrderDispatchGuardBgAddr,
+		"[OrderDispatchGuard] installed at 0x%08X (main), 0x%08X (background) and "
+		"0x%08X (teardown): COBHandler_index + handler_fn checked, OBSERVE-ONLY (bailout=%d)",
+		OrderDispatchGuardMainAddr, OrderDispatchGuardBgAddr, OrderDispatchGuardTeardownAddr,
 		TDRAW_ORDER_DISPATCH_BAILOUT);
 	CanBuildArrayBufferOverrunFix.reset(new SingleHook(CanBuildArrayBufferOverrunFixAddr, sizeof(CanBuildArrayBufferOverrunFixBytes), INLINE_UNPROTECTEVINMENT, CanBuildArrayBufferOverrunFixBytes));
 	if (memcmp(reinterpret_cast<const void*>(AntiNukeTargetSearchAddr),

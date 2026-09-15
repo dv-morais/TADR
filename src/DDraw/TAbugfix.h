@@ -62,6 +62,7 @@ private:
 	std::unique_ptr <SingleHook> NetworkDispatchLog;
 	std::unique_ptr <SingleHook> OrderDispatchGuardMain;
 	std::unique_ptr <SingleHook> OrderDispatchGuardBackground;
+	std::unique_ptr <SingleHook> OrderDispatchGuardTeardown;
 	std::unique_ptr <SingleHook> SoundInstanceLimit;
 	std::vector<std::unique_ptr<SingleHook> > m_hooks;
 	CRITICAL_SECTION DrawPlayer_MAPPEDMEM_cris;
