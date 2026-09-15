@@ -28,6 +28,9 @@ using namespace std;
 #include "AutoTeam.h"
 #include "TakeClaim.h"
 #include "ChatBackdrop.h"
+#include "ChatPosition.h"
+#include "ChatLayout.h"
+#include "PlayerMute.h"
 #include "MultiplayerSchemaUnits.h"
 #include "UnitDefExtensions.h"
 #include "unitrotate.h"
@@ -52,9 +55,11 @@ using namespace std;
 #include "ZeroDamageMapWeapons.h"
 #include "TeamColorNanolathe.h"
 #include "RepairRateFix.h"
+#include "CobDispatchTable.h"
 #include "TransportedExplosions.h"
 #include "AreaDamageOverflow.h"
 #include "GridClaimTieBreak.h"
+#include "SharePercent.h"
 #ifdef TADR_DEBUG_PIPE
 #include "DebugPipeServer.h"
 #endif
@@ -212,6 +217,13 @@ bool APIENTRY DllMain(HINSTANCE hinst, unsigned long reason, void*)
 
 		StartPositions::GetInstance();
 		AutoTeam::Install();
+		// ChatPosition must go in before ChatBackdrop: the backdrop reads
+		// ChatPosition::X()/Y() to keep its box under the relocated text.
+		ChatPosition::Install();
+		ChatLayout::Install();   // after ChatPosition, before ChatBackdrop (checks Active())
+#if PLAYER_MUTE_ENABLE
+		PlayerMute::Install();
+#endif
 		ChatBackdrop::Install();
 		MultiplayerSchemaUnits::GetInstance();
 
@@ -256,6 +268,9 @@ bool APIENTRY DllMain(HINSTANCE hinst, unsigned long reason, void*)
 #if SHARE_ABUSE_GUARD
 		ShareGuard::Install();
 #endif
+#if SHARE_PERCENT_ENABLE
+		SharePercent::Install();       // does not share a hook address with anything above; order-independent
+#endif
 #if TDRAW_EXTENDED_WEAPON_IDS
 		WeaponIdOverflow::Install();
 		WeaponFiredExt::Install();
@@ -266,6 +281,9 @@ bool APIENTRY DllMain(HINSTANCE hinst, unsigned long reason, void*)
 		UnitIdentity::Install();
 #if REPAIR_RATE_FIX_ENABLE
 		RepairRateFix::Install();
+#endif
+#if COB_DISPATCH_TABLE_ENABLE
+		CobDispatchTable::Install();
 #endif
 #ifdef TADR_DEBUG_PIPE
 		DebugPipeServer::Start();
@@ -278,6 +296,11 @@ bool APIENTRY DllMain(HINSTANCE hinst, unsigned long reason, void*)
 #ifdef TADR_DEBUG_PIPE
 		DebugPipeServer::Stop();
 #endif
+#if PLAYER_MUTE_ENABLE
+		PlayerMute::Shutdown();
+#endif
+		ChatLayout::Shutdown();
+		ChatPosition::Shutdown();
 		ReloadBars::Shutdown();
 		UnitStatusCounters::Shutdown();
 #if ALLIED_BUILD_QUEUE_ENABLE
@@ -289,6 +312,9 @@ bool APIENTRY DllMain(HINSTANCE hinst, unsigned long reason, void*)
 #if SHARE_ABUSE_GUARD
 		ShareGuard::Shutdown();
 #endif
+#if SHARE_PERCENT_ENABLE
+		SharePercent::Shutdown();
+#endif
 		UnitIdentity::Shutdown();
 #if TDRAW_EXTENDED_WEAPON_IDS
 		WeaponFiredExt::Shutdown();
@@ -296,6 +322,9 @@ bool APIENTRY DllMain(HINSTANCE hinst, unsigned long reason, void*)
 #endif
 #if REPAIR_RATE_FIX_ENABLE
 		RepairRateFix::Shutdown();
+#endif
+#if COB_DISPATCH_TABLE_ENABLE
+		CobDispatchTable::Shutdown();
 #endif
 		/* KillTimer(NULL, Timer);
 		KillTimer(NULL, DetectTimer); */

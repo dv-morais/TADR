@@ -82,6 +82,20 @@
 #endif
 
 //
+// PlayerMute: the local, display-only `.mute` / `.unmute` typed command --
+// see PlayerMute.h. Splices Net_PushChatHudMessage @0x00463CA0 and
+// Chat_FormatAndSend @0x00463E50; touches no simulation state and needs no
+// version gate in principle (a runtime ini key would do), but every other
+// splice this codebase installs unconditionally on every config is either
+// engine-version-signature-checked (ChatPosition) or itself opt-in
+// (AlliedBuildQueueSync, AirCorpseFall) -- PlayerMute was neither. Gated the
+// same way as those: every config_*.h defines this explicitly.
+//
+#ifndef PLAYER_MUTE_ENABLE
+#define PLAYER_MUTE_ENABLE 0
+#endif
+
+//
 // LagSwitchGuard: freeze the local simulation while every remote peer is
 // silent, so a lag switch cannot buy the cheater invulnerable manoeuvring
 // time.  Defaulted on so a config_*.h that predates the flag keeps the
@@ -108,6 +122,17 @@
 //
 #ifndef ALLIED_BUILD_QUEUE_ENABLE
 #define ALLIED_BUILD_QUEUE_ENABLE 0
+#endif
+
+//
+// COB dispatch-table patch -- Class A (bit-identical, purely faster). See
+// ai-reference/simulation-performance/COB_DISPATCH_PROJECT.md and CLAUDE.md.
+// Escalation-only -- the splice window and every hardcoded address are
+// specific to that exact binary. Every config_*.h defines this explicitly;
+// this fallback is only for a future one that forgets to.
+//
+#ifndef COB_DISPATCH_TABLE_ENABLE
+#define COB_DISPATCH_TABLE_ENABLE 0
 #endif
 
 //
@@ -201,4 +226,16 @@
 #if !REPAIR_RATE_FIX_ENABLE && \
     (REPAIR_RATE_FIX_REPAIR_MULTIPLIER != 1 || REPAIR_RATE_FIX_SELFHEAL_MULTIPLIER != 1)
 #error "REPAIR_RATE_FIX_REPAIR_MULTIPLIER / SELFHEAL_MULTIPLIER require REPAIR_RATE_FIX_ENABLE 1 -- they scale RepairRateFix's accumulator, which is not installed in this config."
+#endif
+
+//
+// SharePercent: accept a `%` suffix on +setsharemetal / +setshareenergy
+// (e.g. `+setshareenergy 50%`) so the share threshold tracks a percentage of
+// max storage instead of a fixed absolute that never adjusts as storage
+// grows. A plain integer keeps vanilla behaviour unchanged. Local per-client
+// state only -- cannot desync. Defaulted OFF; when 0, SharePercent.cpp
+// compiles to nothing.
+//
+#ifndef SHARE_PERCENT_ENABLE
+#define SHARE_PERCENT_ENABLE 0
 #endif

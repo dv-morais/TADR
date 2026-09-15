@@ -334,6 +334,9 @@ if NOT "$(LocalDebuggerWorkingDirectory)" == "$(ProjectDir)" if exist "$(LocalDe
     <ClCompile Include="PacketChatRouter.cpp" />
     <ClCompile Include="HudNotifications.cpp" />
     <ClCompile Include="ChatBackdrop.cpp" />
+    <ClCompile Include="ChatPosition.cpp" />
+    <ClCompile Include="ChatLayout.cpp" />
+    <ClCompile Include="PlayerMute.cpp" />
     <ClCompile Include="ChatFont.cpp" />
     <ClCompile Include="WeaponTdfHook.cpp" />
     <ClCompile Include="WeaponTags.cpp" />
@@ -348,6 +351,7 @@ if NOT "$(LocalDebuggerWorkingDirectory)" == "$(ProjectDir)" if exist "$(LocalDe
     <ClCompile Include="ZeroDamageMapWeapons.cpp" />
     <ClCompile Include="TeamColorNanolathe.cpp" />
     <ClCompile Include="RepairRateFix.cpp" />
+    <ClCompile Include="CobDispatchTable.cpp" />
     <ClCompile Include="DebugPipeServer.cpp" />
     <ClCompile Include="VoteDialog.cpp" />
     <ClCompile Include="LagSwitchGuard.cpp" />
@@ -376,6 +380,10 @@ if NOT "$(LocalDebuggerWorkingDirectory)" == "$(ProjectDir)" if exist "$(LocalDe
     <ClInclude Include="AlliedBuildQueueSync.h" />
     <ClInclude Include="HudNotifications.h" />
     <ClInclude Include="ChatBackdrop.h" />
+    <ClInclude Include="ChatPosition.h" />
+    <ClInclude Include="ChatLayout.h" />
+    <ClInclude Include="ChatClassify.h" />
+    <ClInclude Include="PlayerMute.h" />
     <ClInclude Include="ChatFont.h" />
     <ClInclude Include="DebugPipeServer.h" />
     <ClInclude Include="VoteDialog.h" />
@@ -386,9 +394,11 @@ if NOT "$(LocalDebuggerWorkingDirectory)" == "$(ProjectDir)" if exist "$(LocalDe
     <ClInclude Include="ZeroDamageMapWeapons.h" />
     <ClInclude Include="TeamColorNanolathe.h" />
     <ClInclude Include="RepairRateFix.h" />
+    <ClInclude Include="CobDispatchTable.h" />
     <ClInclude Include="TransportedExplosions.h" />
     <ClInclude Include="AreaDamageOverflow.h" />
     <ClInclude Include="GridClaimTieBreak.h" />
+    <ClInclude Include="SharePercent.h" />
     <ClInclude Include="config.h" />
     <ClInclude Include="config_prota.h" />
     <ClInclude Include="config_ota.h" />
@@ -414,6 +424,7 @@ if NOT "$(LocalDebuggerWorkingDirectory)" == "$(ProjectDir)" if exist "$(LocalDe
     <ClCompile Include="TransportedExplosions.cpp" />
     <ClCompile Include="AreaDamageOverflow.cpp" />
     <ClCompile Include="GridClaimTieBreak.cpp" />
+    <ClCompile Include="SharePercent.cpp" />
     <ClCompile Include="TenPlayerReplay.cpp" />
     <ClCompile Include="TPacket.cpp" />
     <ClCompile Include="UnitIcon.cpp" />

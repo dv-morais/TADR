@@ -52,6 +52,15 @@
 #define REPAIR_RATE_FIX_SELFHEAL_MULTIPLIER 1
 
 //
+// COB script VM -- opcode dispatch
+//
+// See CLAUDE.md / config_escalation.h -- the splice window and every
+// hardcoded address are specific to Escalation GOLD 10.1/10.2's TotalA.exe,
+// so this stays off here unless someone re-verifies it against this config's
+// own exe.  See ai-reference/simulation-performance/COB_DISPATCH_PROJECT.md.
+#define COB_DISPATCH_TABLE_ENABLE 0
+
+//
 // Off-map aircraft
 //
 // Width, in map tiles (16 world units each), of the band outside the map where aircraft can
@@ -88,6 +97,10 @@
 // CHAT_05-hijack msgId 0x60.  Off: nothing is hooked, sent, parsed or drawn,
 // and the "Show ally queues" dialog checkbox is not created.
 #define ALLIED_BUILD_QUEUE_ENABLE 0
+
+// PlayerMute: local .mute / .unmute -- see config.h. Off here; only turn on
+// once this chat feature set has been validated against this config too.
+#define PLAYER_MUTE_ENABLE 0
 
 //
 // Air-unit stacking / area-damage immunity -- see AreaDamageOverflow.h.
