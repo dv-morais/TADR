@@ -8,7 +8,8 @@
      defined(TDRAW_CONFIG_OTA) + \
      defined(TDRAW_CONFIG_TAZERO) + \
      defined(TDRAW_CONFIG_BTA) + \
-     defined(TDRAW_CONFIG_MAYHEM)) != 1
+     defined(TDRAW_CONFIG_MAYHEM) + \
+     defined(TDRAW_CONFIG_TWILIGHT)) != 1
 #pragma message ( __FILE__ " - Warning: Exactly one TDRAW_CONFIG_* configurations must be #define'd. defaulting to TDRAW_CONFIG_PROTA" )
 #define TDRAW_CONFIG_PROTA
 // Implicit-default builds (no explicit config selected) get the profiler
@@ -34,6 +35,8 @@
 #include "config_bta.h"
 #elif defined(TDRAW_CONFIG_MAYHEM)
 #include "config_mayhem.h"
+#elif defined(TDRAW_CONFIG_TWILIGHT)
+#include "config_twilight.h"
 #endif
 
 //

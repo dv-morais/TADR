@@ -395,6 +395,7 @@ if NOT "$(LocalDebuggerWorkingDirectory)" == "$(ProjectDir)" if exist "$(LocalDe
     <ClInclude Include="config_escalation.h" />
     <ClInclude Include="config_bta.h" />
     <ClInclude Include="config_mayhem.h" />
+    <ClInclude Include="config_twilight.h" />
     <ClInclude Include="config_tazero.h" />
     <ClInclude Include="ConstructionKickout.h" />
     <ClInclude Include="GameTickHook.h" />
