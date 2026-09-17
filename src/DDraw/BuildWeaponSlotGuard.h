@@ -54,16 +54,24 @@
 // TDF edit can fix it.
 //
 // ---------------------------------------------------------------------------------
-// THE FIX for the above: WeaponDivisorIsSafe(), called from both Fix 2 routers below.
+// THE FIX for the above: ClassifyWeaponSlot(), called from both Fix 2 routers below.
 // ---------------------------------------------------------------------------------
-// Both routers already resolve the order and its weapon-slot index at the point where
-// they can cheaply also resolve the actual weapon pointer and check the value about to
-// be divided by, directly, regardless of why it might be zero. This covers the sentinel
-// (this bug's real, evidenced cause), a genuinely degenerate TDF weapon (FIX 1's
-// target, now redundant but harmless), and any other future way this field could end
-// up zero, all in one check, at the one place that actually matters: immediately
-// before the value is used. See the `WeaponDivisorIsSafe` comment in the .cpp for the
-// exact mechanism and the self-test that exercises this precise scenario.
+// Resolves the order's weapon slot to the actual WeaponStruct* and checks the divisor
+// at the point of use, whatever made it zero. Verdicts: ok, zeroDivisor (the sentinel),
+// badIndex, unreadableOrder / unreadableUnit / unreadableWeapon (corruption). What each
+// consumer does with a non-ok verdict:
+//   - HUD (an integer `idiv`, where all five PR #26 prod crashes are): return 0 -- no
+//     progress bar. Display only, no state touched.
+//   - Sim, zeroDivisor: OBSERVE ONLY, bit-identical to vanilla. Its divides are masked
+//     x87 and survive a zero divisor (no integer divide in the function), and PR #26
+//     reports 0 of 252 prod crash bundles faulting there. Why not bail out: every exit
+//     of that function changes order state, and the only generic one (return 7) makes
+//     the dispatcher free ALL of the unit's orders -- on a client that is already
+//     diverged, making it worse (PR #26 F7).
+//   - Sim, corrupt order: bail out via return 7, the exit vanilla itself takes for a
+//     corrupt State byte on the same order. Prevents a write outside the weapon-slot
+//     array. Never observed live.
+// So the sim side only ever changes behaviour for an order that is already corrupt.
 //
 // ---------------------------------------------------------------------------------
 // FIX 1 -- kept as insurance, NOT the fix for the crashes above. `[bin]` VERIFIED.
@@ -85,8 +93,10 @@
 // explanation for a real crash. It stays in as free, zero-behaviour-change hardening
 // for any mod's data (or a future edit) that hits this authoring mistake for real; it
 // is not required for, and does not explain, any crash this module has actual evidence
-// for. Hook site: 0x0042F313, the function's own epilogue (`push ebp; call 0x49E010`),
-// which runs after both fields are stored. EBP (the WeaponStruct* this function
+// for. It is the only guard for such a weapon on the sim side, which just observes a
+// zero divisor: there, vanilla builds the shot instantly and at zero cost (both cost
+// deltas cancel to 0). Hook site: 0x0042F313, the function's own epilogue
+// (`push ebp; call 0x49E010`), which runs after both fields are stored. EBP (the WeaponStruct* this function
 // operates on) is written exactly once, at 0x0042E489, and never reassigned before
 // 0x0042F313 -- confirmed by disassembling the complete function and enumerating every
 // instruction that writes EBP.
@@ -124,18 +134,17 @@
 // FIX: bounds-check the index at the top of each function and, if it is out of range
 // (or the order pointer itself is not safely readable), redirect to that SAME
 // function's own existing bail-out path rather than fabricating a new one:
-//   - Sim: redirect to 0x00402BA4, vanilla's own "unrecognised order state" return
-//     (already produced today for any unknown State value, so the caller already
-//     handles it -- this adds no new behaviour surface, only reaches an existing one
-//     from one more place).
+//   - Sim: redirect to 0x00402BA4, vanilla's `return 7` for a corrupt State byte. Not
+//     harmless: the dispatcher's case 7 (0x0043BA3D) frees every order on the unit's
+//     main and background lists. Acceptable only for an order that is already corrupt,
+//     which is why the zero-divisor case above does not use it.
 //   - HUD: redirect to 0x00439D6B, the function's own `xor eax,eax` return-0, already
-///    an exercised path today whenever BackgroundOrder is null or the order list is
+//     an exercised path today whenever BackgroundOrder is null or the order list is
 //     exhausted.
-// Both trigger paths log (throttled) and drop a CrashTrace_RecordEvent breadcrumb --
-// if this ever fires live, that is the discovery of a second real bug and it must be
-// visible, not silently absorbed. The same two hook sites and bail-out targets are
-// reused, unmodified, for the point-of-use divisor check above -- no new hook, no new
-// patch surface, only new logic inside the routers already installed here.
+// Every non-ok verdict logs and drops a TRACE_CAT_BWSG breadcrumb (unit, slot, resolved
+// weapon, verdict, GameTime), both throttled so a persistently diverged unit cannot
+// flood the log or the crash-trace ring. Same two hooks for both checks -- no new patch
+// surface.
 //
 // A note on the relative CALL stolen by the Fix 1 hook (`call 0x49E010`): copying a
 // relative `E8` displacement into a trampoline reads like a bug until you check that

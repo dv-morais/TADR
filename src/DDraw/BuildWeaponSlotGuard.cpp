@@ -10,6 +10,7 @@
 #include "iddrawsurface.h"
 #include "hook/hook.h"
 #include "tamem.h"
+#include "tafunctions.h"
 #include "TAbugfix.h"
 
 namespace
@@ -67,7 +68,7 @@ namespace
 	//   00402B73  8B 54 24 0C       mov edx,[esp+0xC]    ; edx = UnitStruct* (set once,
 	//                                                       never reassigned before the
 	//                                                       hook fires -- re-verified this
-	//                                                       session, see WeaponDivisorIsSafe)
+	//                                                       session, T0.8a)
 	//   00402B7A  8B 74 24 1C       mov esi,[esp+0x1C]   ; esi = UnitOrdersStruct*
 	//   00402B7F  8B 46 36          mov eax,[esi+0x36]   ; <- hook site
 	//   00402B82  8B C8             mov ecx,eax
@@ -94,12 +95,13 @@ namespace
 	const BYTE  kFix2aExpectedBytes[8] =
 		{ 0x8B, 0x46, 0x36, 0x8B, 0xC8, 0xC1, 0xE1, 0x03 };
 
-	// 0x00402BA4: vanilla's own "unrecognised State" return -- mov eax,7; pop
-	// edi/esi/ebp/ebx; add esp,8; ret 0xC. Stack-correct as a redirect target from
-	// 0x00402B7F: at that address ebx,ebp,esi,edi have ALL already been pushed (in
-	// that order, at 00402B77-7E) and esp already carries the function's initial
-	// `sub esp,8`, which is exactly what this epilogue unwinds -- re-verified by
-	// disassembling the function's prologue this session.
+	// 0x00402BA4: mov eax,7; pop edi/esi/ebp/ebx; add esp,8; ret 0xC. Stack-correct from
+	// 0x00402B7F (all four pushes and the `sub esp,8` are already done). Vanilla reaches it
+	// only by falling through the State ladder -- nothing branches, calls or points to it
+	// (T0.10b) -- i.e. it is vanilla's exit for a corrupt State byte on this same order.
+	// Return 7 makes MainOrderStateController (case 7, 0x0043BA3D) free EVERY order on the
+	// unit's main and background lists, so it is only used for a corrupt order here, never
+	// for a zero divisor (PR #26 F7; see Fix2aSimBoundsProc).
 	const DWORD kFix2aBailoutAddr = 0x00402BA4u;
 	const BYTE  kFix2aBailoutExpectedBytes[5] = { 0xB8, 0x07, 0x00, 0x00, 0x00 };
 
@@ -153,22 +155,21 @@ namespace
 	// Bounds-checking the index alone (above) does not catch this: the index is perfectly
 	// valid (0, 1, or 2) and the pointer it resolves to is perfectly readable -- entry 0 of
 	// a real, live, permanently-allocated array. The actual fix is to check the value this
-	// code is about to divide by, at the point of use, regardless of why it might be zero
-	// -- which also makes Fix 1's TDF-time clamp strictly redundant for anything this check
-	// already covers, though it is left in as free, zero-behaviour-change insurance for a
-	// genuinely misconfigured TDF (a case Fix 1 protects and this check also would, but
-	// only once such a weapon is actually the one being divided by).
-	const size_t kUnitWeaponSlotStride = 0x1Cu;  // 28: idx*28, tamem.h Weapon1/2/3 strides
-	const size_t kUnitWeaponSlotBase   = 0x10u;  // Weapon1@0x10 / Weapon2@0x2C / Weapon3@0x48
-	// WeaponDivisorIsSafe() itself is defined below, after SafeIsBadReadPtr (it calls
-	// it) -- see the definition just below that function for the full comment.
+	// code is about to divide by, at the point of use, regardless of why it might be zero.
+	// The sim side only observes a zero divisor (see Fix2aSimBoundsProc), so for a genuinely
+	// degenerate stockpile TDF Fix 1 is still what stops vanilla's sim path: with divisor 0
+	// both cost deltas at 0x00402BD4-0x00402C55 cancel to 0 and the shot completes at once.
+	const DWORD kUnitWeaponSlotStride = 0x1Cu;  // 28: idx*28, tamem.h Weapon1/2/3 strides
+	const DWORD kUnitWeaponSlotBase   = 0x10u;  // Weapon1@0x10 / Weapon2@0x2C / Weapon3@0x48
+	// ClassifyWeaponSlot() is defined below, after SafeIsBadReadPtr (which it calls).
 
-	DWORD g_fix2aRejects = 0;
-	DWORD g_fix2bRejects = 0;
-	DWORD g_fix2aZeroDivisorRejects = 0;   // subset of g_fix2aRejects: index was VALID,
-	DWORD g_fix2bZeroDivisorRejects = 0;   // the resolved weapon's divisor was the problem
-	DWORD g_fix2aSane = 0;   // valid-index calls that fell through untouched
+	// Per consumer, disjoint: every call lands in exactly one of sane / zeroDiv / bad.
+	DWORD g_fix2aSane = 0;
 	DWORD g_fix2bSane = 0;
+	DWORD g_fix2aZeroDiv = 0;   // readable weapon, zero divisor (the sentinel)
+	DWORD g_fix2bZeroDiv = 0;
+	DWORD g_fix2aBad = 0;       // corrupt order: bad index, or unreadable order/unit/weapon
+	DWORD g_fix2bBad = 0;
 
 	// A rejection is never silent, but a HEALTHY run produces no log line at all from
 	// either fix -- which leaves no way to tell "this played a full session with the
@@ -192,9 +193,9 @@ namespace
 		g_lastHeartbeatMs = now;
 		IDDrawSurface::OutptFmtTxt(
 			"[BuildWeaponSlotGuard][heartbeat] clamped=%lu "
-			"sim(sane=%lu rejected=%lu zerodiv=%lu) hud(sane=%lu rejected=%lu zerodiv=%lu)",
-			g_fix1Clamped, g_fix2aSane, g_fix2aRejects, g_fix2aZeroDivisorRejects,
-			g_fix2bSane, g_fix2bRejects, g_fix2bZeroDivisorRejects);
+			"sim(sane=%lu zerodiv=%lu bad=%lu) hud(sane=%lu zerodiv=%lu bad=%lu)",
+			g_fix1Clamped, g_fix2aSane, g_fix2aZeroDiv, g_fix2aBad,
+			g_fix2bSane, g_fix2bZeroDiv, g_fix2bBad);
 	}
 
 	// Matches the OrderDispatchShouldLog idiom in TABugFix.cpp: log the first 20
@@ -224,28 +225,103 @@ namespace
 		}
 	}
 
-	// True iff `unit`'s weapon at `idx` (idx already known to be in {0,1,2}) is safe to
-	// divide by: the slot resolves to a readable WeaponStruct* whose reload-tick total
-	// (+0xE4) is non-zero. False covers an unreadable pointer (the original index-
-	// corruption hazard) and a readable-but-zero divisor (the sentinel, or any other
-	// degenerate weapon) identically, because both produce the exact same crash at the
-	// exact same instruction and the fix -- do not use this weapon's number -- is the
-	// same either way. See the big comment above kUnitWeaponSlotStride for why this
-	// exists: PR #26's review matched this exact shape to five real production crashes.
-	bool WeaponDivisorIsSafe(DWORD unit, DWORD idx)
+	// Values are part of the log and BWSG breadcrumb format (TAbugfix.h): append only.
+	enum SlotVerdict
 	{
-		const DWORD slotAddr = unit + static_cast<DWORD>(kUnitWeaponSlotStride * idx) + kUnitWeaponSlotBase;
-		if (SafeIsBadReadPtr(reinterpret_cast<const void*>(slotAddr), sizeof(DWORD)))
-			return false;
+		kSlotOk               = 0,
+		kSlotZeroDivisor      = 1,  // readable weapon, +0xE4 == 0 -- the sentinel (PR #26)
+		kSlotBadIndex         = 2,  // BuildUnitID outside {0,1,2}
+		kSlotUnreadableOrder  = 3,
+		kSlotUnreadableUnit   = 4,
+		kSlotUnreadableWeapon = 5,  // NULL or unmapped WeaponStruct*
+	};
 
-		const DWORD weapon = *reinterpret_cast<const DWORD*>(slotAddr);
-		if (SafeIsBadReadPtr(reinterpret_cast<const void*>(weapon),
-			kWeaponReloadTimeOffset + sizeof(WORD)))
-			return false;
+	const char* SlotVerdictName(SlotVerdict v)
+	{
+		switch (v)
+		{
+		case kSlotOk:               return "ok";
+		case kSlotZeroDivisor:      return "zeroDivisor";
+		case kSlotBadIndex:         return "badIndex";
+		case kSlotUnreadableOrder:  return "unreadableOrder";
+		case kSlotUnreadableUnit:   return "unreadableUnit";
+		case kSlotUnreadableWeapon: return "unreadableWeapon";
+		}
+		return "?";
+	}
 
-		const WORD divisor = *reinterpret_cast<const WORD*>(
-			reinterpret_cast<const BYTE*>(weapon) + kWeaponReloadTimeOffset);
-		return divisor != 0;
+	// Resolves order->BuildUnitID to unit->Weapon[idx] and checks the divisor both consumers
+	// use. `idx` / `weapon` are filled as far as resolution got (else 0xFFFFFFFF / 0). Runs
+	// per BuildWeapon order per sim tick and per HUD frame, so it probes only the bytes it
+	// reads, and rejects NULL before probing so no call raises a first-chance AV.
+	SlotVerdict ClassifyWeaponSlot(DWORD order, DWORD unit, DWORD& idx, DWORD& weapon)
+	{
+		idx = 0xFFFFFFFFu;
+		weapon = 0;
+
+		const DWORD idxAddr = order + offsetof(UnitOrdersStruct, BuildUnitID);
+		if (!order || SafeIsBadReadPtr(reinterpret_cast<const void*>(idxAddr), sizeof(DWORD)))
+			return kSlotUnreadableOrder;
+		idx = *reinterpret_cast<const DWORD*>(idxAddr);
+		if (idx > kMaxValidWeaponSlot)
+			return kSlotBadIndex;
+
+		const DWORD slotAddr = unit + kUnitWeaponSlotBase + kUnitWeaponSlotStride * idx;
+		if (!unit || SafeIsBadReadPtr(reinterpret_cast<const void*>(slotAddr), sizeof(DWORD)))
+			return kSlotUnreadableUnit;
+		weapon = *reinterpret_cast<const DWORD*>(slotAddr);
+
+		const DWORD divisorAddr = weapon + kWeaponReloadTimeOffset;
+		if (!weapon || SafeIsBadReadPtr(reinterpret_cast<const void*>(divisorAddr), sizeof(WORD)))
+			return kSlotUnreadableWeapon;
+		return *reinterpret_cast<const WORD*>(divisorAddr) != 0 ? kSlotOk : kSlotZeroDivisor;
+	}
+
+	bool g_selfTestRunning = false;   // keeps synthetic events out of the real crash-trace ring
+
+	// Log line + breadcrumb for one non-ok verdict, both throttled by ShouldLog: a diverged
+	// unit re-trips this every sim tick / HUD frame, and unthrottled breadcrumbs would flush
+	// the 128-entry ring -- including the UnitIdentity entries that explain the divergence.
+	// `n` is the count for this verdict's class (zeroDiv or bad), not a shared one, so a flood
+	// of zero-divisor events can never throttle away a corrupt-order event.
+	// `bailout` 0 = observed only, vanilla path kept.
+	void ReportSlotEvent(const char* site, DWORD siteId, SlotVerdict v, DWORD unit, DWORD order,
+		DWORD idx, DWORD weapon, DWORD n, DWORD bailout)
+	{
+		if (!ShouldLog(n))
+			return;
+
+		if (!g_selfTestRunning)
+		{
+			const TAdynmemStruct* ta = *TAmainStruct_PtrPtr;
+			const DWORD gameTime = ta ? static_cast<DWORD>(ta->GameTime) : 0u;
+			CrashTrace_RecordEvent(TRACE_CAT_BWSG, unit, idx, weapon,
+				siteId | (static_cast<DWORD>(v) << 4) | (gameTime << 8));
+		}
+
+		// Unit identity, for matching against UnitIdentity's MORF/GHST lines and a demo.
+		int unitIdx = -1, unitType = -1, owner = -1;
+		const size_t identBegin = offsetof(UnitStruct, UnitID);
+		const size_t identLen = offsetof(UnitStruct, cOwnerID) + 1 - identBegin;
+		if (unit && !SafeIsBadReadPtr(reinterpret_cast<const void*>(unit + identBegin), identLen))
+		{
+			const UnitStruct* u = reinterpret_cast<const UnitStruct*>(unit);
+			unitIdx = u->UnitInGameIndex;
+			unitType = u->UnitID;
+			owner = u->cOwnerID;
+		}
+
+		char action[32];
+		if (bailout)
+			_snprintf_s(action, sizeof(action), _TRUNCATE, "bailout 0x%08X", bailout);
+		else
+			_snprintf_s(action, sizeof(action), _TRUNCATE, "observed");
+
+		IDDrawSurface::OutptFmtTxt(
+			"[BuildWeaponSlotGuard] %s: %s unit=%08X unitIdx=%d type=%d owner=%d order=%08X "
+			"slot=%lu weapon=%08X -> %s (#%lu)",
+			site, SlotVerdictName(v), unit, unitIdx, unitType, owner, order, idx, weapon,
+			action, n);
 	}
 
 	bool CheckBytes(DWORD address, const BYTE* expected, size_t len, const char* what)
@@ -273,7 +349,7 @@ namespace
 	// did. Kept as free, zero-behaviour-change insurance against a genuinely
 	// misconfigured stockpile weapon's TDF -- a real, if so-far unobserved, mistake
 	// this still catches. The fix for the actual observed crashes is
-	// WeaponDivisorIsSafe, below, called from both Fix 2 routers.
+	// ClassifyWeaponSlot, above, called from both Fix 2 routers.
 	// ---------------------------------------------------------------------------
 	int __stdcall Fix1WeaponLoadEpilogueProc(PInlineX86StackBuffer buf)
 	{
@@ -310,49 +386,37 @@ namespace
 	}
 
 	// ---------------------------------------------------------------------------
-	// Fix 2 routers -- one per consumer. Two predicates, checked in order, either of
-	// which redirects to that function's own existing bail-out: (1) the order pointer
-	// is not safely readable, or its BuildUnitID is outside {0,1,2} -- the original
-	// out-of-bounds-read/write hazard; (2) the index IS valid but the weapon it
-	// resolves to has a zero reload divisor -- the sentinel/degenerate-weapon hazard
-	// PR #26's review found in five real production crashes (see the big comment
-	// above WeaponDivisorIsSafe). (2) is only ever evaluated once (1) has already
-	// passed, so a bad index never drives an out-of-range unit+idx*28 computation.
+	// Fix 2 routers. Both classify the slot; they differ only in what a non-ok verdict does:
+	//   - HUD: always return 0 via 0x00439D6B. Display only, no state touched.
+	//   - Sim, zero divisor: observe only -- count, log, fall through, bit-identical to
+	//     vanilla. Its divides are masked x87, not `idiv` (T0.10c), so vanilla survives
+	//     them; TADR never changes the FPU control word; and PR #26 reports 0 of 252 prod
+	//     crash bundles faulting in this function. Every exit from it changes order state,
+	//     and the one below frees all the unit's orders on a client that is already
+	//     diverged -- a regression, not a guard (PR #26 F7).
+	//   - Sim, corrupt order (bad index / unreadable): 0x00402BA4, the same exit vanilla
+	//     takes for a corrupt State byte. A bad index would otherwise write outside the
+	//     weapon-slot array (State 2, 0x00402BB9). Never observed live.
 	// ---------------------------------------------------------------------------
 	int __stdcall Fix2aSimBoundsProc(PInlineX86StackBuffer buf)
 	{
-		const UnitOrdersStruct* order = reinterpret_cast<const UnitOrdersStruct*>(buf->Esi);
-
-		const bool readable = !SafeIsBadReadPtr(
-			order, offsetof(UnitOrdersStruct, BuildUnitID) + sizeof(DWORD));
-		const DWORD idx = readable ? order->BuildUnitID : 0xFFFFFFFFu;
-		const bool indexOk = readable && idx <= kMaxValidWeaponSlot;
-		// buf->Edx = unit pointer at this hook site -- re-verified 2026-09-14 by
-		// disassembling 0x00402B70..0x00402B7F: set once at 0x00402B73 from [esp+0xC],
-		// never reassigned before the hook fires (see the site comment above).
-		const bool divisorOk = indexOk && WeaponDivisorIsSafe(buf->Edx, idx);
-
-		if (indexOk && divisorOk)
+		// Edx = UnitStruct*, Esi = UnitOrdersStruct* at this site (T0.8a).
+		DWORD idx, weapon;
+		const SlotVerdict v = ClassifyWeaponSlot(buf->Esi, buf->Edx, idx, weapon);
+		if (v == kSlotOk)
 		{
 			++g_fix2aSane;
 			MaybeHeartbeat();
 			return 0;
 		}
 
-		++g_fix2aRejects;
-		if (indexOk) ++g_fix2aZeroDivisorRejects;
+		const bool observeOnly = (v == kSlotZeroDivisor);
+		if (observeOnly) ++g_fix2aZeroDiv; else ++g_fix2aBad;
 		MaybeHeartbeat();
-		CrashTrace_RecordEvent(TRACE_CAT_BWSG, reinterpret_cast<DWORD>(order), idx,
-			readable ? 1u : 0u, 0);
-		if (ShouldLog(g_fix2aRejects))
-		{
-			IDDrawSurface::OutptFmtTxt(
-				"[BuildWeaponSlotGuard] sim: BAD weapon slot order=%08X readable=%d "
-				"idx=%lu reason=%s -- bailing out to 0x%08X instead of an out-of-bounds "
-				"unit read/write or a divide by zero (#%lu)",
-				reinterpret_cast<DWORD>(order), (int)readable, idx,
-				indexOk ? "zeroDivisor" : "badIndex", kFix2aBailoutAddr, g_fix2aRejects);
-		}
+		ReportSlotEvent("sim", 0, v, buf->Edx, buf->Esi, idx, weapon,
+			observeOnly ? g_fix2aZeroDiv : g_fix2aBad, observeOnly ? 0 : kFix2aBailoutAddr);
+		if (observeOnly)
+			return 0;
 
 		buf->rtnAddr_Pvoid = reinterpret_cast<LPVOID>(kFix2aBailoutAddr);
 		return X86STRACKBUFFERCHANGE;
@@ -360,38 +424,20 @@ namespace
 
 	int __stdcall Fix2bHudBoundsProc(PInlineX86StackBuffer buf)
 	{
-		const UnitOrdersStruct* order = reinterpret_cast<const UnitOrdersStruct*>(buf->Eax);
-
-		const bool readable = !SafeIsBadReadPtr(
-			order, offsetof(UnitOrdersStruct, BuildUnitID) + sizeof(DWORD));
-		const DWORD idx = readable ? order->BuildUnitID : 0xFFFFFFFFu;
-		const bool indexOk = readable && idx <= kMaxValidWeaponSlot;
-		// buf->Edx = unit pointer at this hook site -- re-verified 2026-09-14 by
-		// disassembling 0x00439D20..0x00439D41: set once at 0x00439D20 from [esp+4],
-		// never reassigned before the hook fires.
-		const bool divisorOk = indexOk && WeaponDivisorIsSafe(buf->Edx, idx);
-
-		if (indexOk && divisorOk)
+		// Edx = UnitStruct*, Eax = UnitOrdersStruct* at this site (T0.8b).
+		DWORD idx, weapon;
+		const SlotVerdict v = ClassifyWeaponSlot(buf->Eax, buf->Edx, idx, weapon);
+		if (v == kSlotOk)
 		{
 			++g_fix2bSane;
 			MaybeHeartbeat();
 			return 0;
 		}
 
-		++g_fix2bRejects;
-		if (indexOk) ++g_fix2bZeroDivisorRejects;
+		if (v == kSlotZeroDivisor) ++g_fix2bZeroDiv; else ++g_fix2bBad;
 		MaybeHeartbeat();
-		CrashTrace_RecordEvent(TRACE_CAT_BWSG, reinterpret_cast<DWORD>(order), idx,
-			readable ? 1u : 0u, 1);
-		if (ShouldLog(g_fix2bRejects))
-		{
-			IDDrawSurface::OutptFmtTxt(
-				"[BuildWeaponSlotGuard] hud: BAD weapon slot order=%08X readable=%d "
-				"idx=%lu reason=%s -- bailing out to 0x%08X instead of reading garbage "
-				"as a WeaponStruct* or dividing by zero (#%lu)",
-				reinterpret_cast<DWORD>(order), (int)readable, idx,
-				indexOk ? "zeroDivisor" : "badIndex", kFix2bBailoutAddr, g_fix2bRejects);
-		}
+		ReportSlotEvent("hud", 1, v, buf->Edx, buf->Eax, idx, weapon,
+			v == kSlotZeroDivisor ? g_fix2bZeroDiv : g_fix2bBad, kFix2bBailoutAddr);
 
 		buf->rtnAddr_Pvoid = reinterpret_cast<LPVOID>(kFix2bBailoutAddr);
 		return X86STRACKBUFFERCHANGE;
@@ -467,134 +513,99 @@ namespace
 		return ok;
 	}
 
+	// One Fix 2 case: checks the verdict, then that both routers take the right exit and
+	// move exactly the right counter. Sim falls through for ok AND zero divisor; HUD only
+	// for ok.
+	bool SelfTestSlotCase(DWORD order, DWORD unit, SlotVerdict expected)
+	{
+		DWORD idx, weapon;
+		if (ClassifyWeaponSlot(order, unit, idx, weapon) != expected)
+			return false;
+
+		const DWORD isOk  = (expected == kSlotOk) ? 1u : 0u;
+		const DWORD isZd  = (expected == kSlotZeroDivisor) ? 1u : 0u;
+		const DWORD isBad = (isOk || isZd) ? 0u : 1u;
+		const DWORD saneA = g_fix2aSane, zdA = g_fix2aZeroDiv, badA = g_fix2aBad;
+		const DWORD saneB = g_fix2bSane, zdB = g_fix2bZeroDiv, badB = g_fix2bBad;
+
+		InlineX86StackBuffer buf;
+		std::memset(&buf, 0, sizeof(buf));
+		buf.Edx = unit;
+		buf.Esi = order;   // sim's order register
+		buf.Eax = order;   // hud's order register
+
+		const int rcA = Fix2aSimBoundsProc(&buf);
+		const bool simOk = isBad
+			? (rcA == X86STRACKBUFFERCHANGE && buf.rtnAddr_Pvoid == reinterpret_cast<LPVOID>(kFix2aBailoutAddr))
+			: (rcA == 0 && buf.rtnAddr_Pvoid == NULL);
+
+		buf.rtnAddr_Pvoid = NULL;
+		const int rcB = Fix2bHudBoundsProc(&buf);
+		const bool hudOk = isOk
+			? (rcB == 0 && buf.rtnAddr_Pvoid == NULL)
+			: (rcB == X86STRACKBUFFERCHANGE && buf.rtnAddr_Pvoid == reinterpret_cast<LPVOID>(kFix2bBailoutAddr));
+
+		return simOk && hudOk
+			&& g_fix2aSane == saneA + isOk && g_fix2aZeroDiv == zdA + isZd && g_fix2aBad == badA + isBad
+			&& g_fix2bSane == saneB + isOk && g_fix2bZeroDiv == zdB + isZd && g_fix2bBad == badB + isBad;
+	}
+
 	bool SelfTestFix2SlotBounds()
 	{
-		// Synthetic weapons: one healthy (nonzero divisor), one mimicking
-		// WeaponsTypedefArray[0] -- a perfectly readable, valid WeaponStruct whose
-		// +0xE4 is 0. This is the EXACT shape PR #26's review found in all five real
-		// production crashes: the index is valid, the pointer is valid, only the
-		// divisor is zero.
 		WeaponStruct healthyWeapon;
 		std::memset(&healthyWeapon, 0, sizeof(healthyWeapon));
 		*reinterpret_cast<WORD*>(reinterpret_cast<BYTE*>(&healthyWeapon) + kWeaponReloadTimeOffset) = 100;
 
+		// Shaped like WeaponsTypedefArray[0]: valid and readable, +0xE4 == 0.
 		WeaponStruct sentinelWeapon;
-		std::memset(&sentinelWeapon, 0, sizeof(sentinelWeapon));   // +0xE4 stays 0
+		std::memset(&sentinelWeapon, 0, sizeof(sentinelWeapon));
 
-		// Synthetic unit: only the three weapon-slot pointers matter here.
-		BYTE unit[0x60];
-		std::memset(unit, 0, sizeof(unit));
-		*reinterpret_cast<WeaponStruct**>(unit + 0x10) = &healthyWeapon;   // slot 0
-		*reinterpret_cast<WeaponStruct**>(unit + 0x2C) = &healthyWeapon;   // slot 1
-		*reinterpret_cast<WeaponStruct**>(unit + 0x48) = &sentinelWeapon;  // slot 2
+		// Full-size unit so ReportSlotEvent's identity read stays inside it. Slot offsets are
+		// literals on purpose, so they check kUnitWeaponSlotBase/Stride rather than reuse them.
+		UnitStruct unit;
+		std::memset(&unit, 0, sizeof(unit));
+		BYTE* u = reinterpret_cast<BYTE*>(&unit);
+		WeaponStruct** slot1 = reinterpret_cast<WeaponStruct**>(u + 0x2C);
+		*reinterpret_cast<WeaponStruct**>(u + 0x10) = &healthyWeapon;
+		*slot1 = &healthyWeapon;
+		*reinterpret_cast<WeaponStruct**>(u + 0x48) = &sentinelWeapon;
 
 		UnitOrdersStruct order;
 		std::memset(&order, 0, sizeof(order));
-
-		InlineX86StackBuffer buf;
-		std::memset(&buf, 0, sizeof(buf));
-		buf.Edx = reinterpret_cast<DWORD>(unit);
+		const DWORD o = reinterpret_cast<DWORD>(&order);
+		const DWORD un = reinterpret_cast<DWORD>(&unit);
 
 		bool ok = true;
+		order.BuildUnitID = 0;           ok = SelfTestSlotCase(o, un, kSlotOk) && ok;
+		order.BuildUnitID = 1;           ok = SelfTestSlotCase(o, un, kSlotOk) && ok;
+		order.BuildUnitID = 2;           ok = SelfTestSlotCase(o, un, kSlotZeroDivisor) && ok;
+		order.BuildUnitID = 3;           ok = SelfTestSlotCase(o, un, kSlotBadIndex) && ok;
+		order.BuildUnitID = 0xFFFFFFFFu; ok = SelfTestSlotCase(o, un, kSlotBadIndex) && ok;
+		                                 ok = SelfTestSlotCase(0, un, kSlotUnreadableOrder) && ok;
+		order.BuildUnitID = 0;           ok = SelfTestSlotCase(o, 0, kSlotUnreadableUnit) && ok;
+		*slot1 = NULL;
+		order.BuildUnitID = 1;           ok = SelfTestSlotCase(o, un, kSlotUnreadableWeapon) && ok;
+		*slot1 = &healthyWeapon;
 
-		// Slots 0 and 1: valid index, healthy weapon -> fall through untouched.
-		for (DWORD idx = 0; idx <= 1; ++idx)
-		{
-			order.BuildUnitID = idx;
-
-			buf.Esi = reinterpret_cast<DWORD>(&order);
-			buf.rtnAddr_Pvoid = NULL;
-			int rcSim = Fix2aSimBoundsProc(&buf);
-			ok = ok && (rcSim == 0) && (buf.rtnAddr_Pvoid == NULL);
-
-			buf.Eax = reinterpret_cast<DWORD>(&order);
-			buf.rtnAddr_Pvoid = NULL;
-			int rcHud = Fix2bHudBoundsProc(&buf);
-			ok = ok && (rcHud == 0) && (buf.rtnAddr_Pvoid == NULL);
-		}
-
-		// Slot 2: valid index, but the resolved weapon's divisor is 0 -- the sentinel
-		// shape. Must redirect, NOT fall through, even though the index itself is
-		// perfectly valid. This is the exact case Fix 2 could not catch before the
-		// 2026-09-14 fix, and the exact case that killed all five real players.
+		// The breadcrumb/log must carry the sentinel's own address, not a partial result.
+		DWORD idx, weapon;
 		order.BuildUnitID = 2;
-
-		buf.Esi = reinterpret_cast<DWORD>(&order);
-		buf.rtnAddr_Pvoid = NULL;
-		DWORD beforeZDa = g_fix2aZeroDivisorRejects;
-		int rcSimZ = Fix2aSimBoundsProc(&buf);
-		ok = ok && (rcSimZ == X86STRACKBUFFERCHANGE)
-			&& (buf.rtnAddr_Pvoid == reinterpret_cast<LPVOID>(kFix2aBailoutAddr))
-			&& (g_fix2aZeroDivisorRejects == beforeZDa + 1);
-
-		buf.Eax = reinterpret_cast<DWORD>(&order);
-		buf.rtnAddr_Pvoid = NULL;
-		DWORD beforeZDb = g_fix2bZeroDivisorRejects;
-		int rcHudZ = Fix2bHudBoundsProc(&buf);
-		ok = ok && (rcHudZ == X86STRACKBUFFERCHANGE)
-			&& (buf.rtnAddr_Pvoid == reinterpret_cast<LPVOID>(kFix2bBailoutAddr))
-			&& (g_fix2bZeroDivisorRejects == beforeZDb + 1);
-
-		// Bad index (the smallest out-of-range value, 3) -> redirect to the bailout,
-		// counted exactly once per consumer, and NOT counted as a zero-divisor reject
-		// -- the index check must short-circuit before the weapon is ever resolved.
-		order.BuildUnitID = 3;
-
-		buf.Esi = reinterpret_cast<DWORD>(&order);
-		buf.rtnAddr_Pvoid = NULL;
-		DWORD before = g_fix2aRejects;
-		DWORD beforeZD = g_fix2aZeroDivisorRejects;
-		int rcSim = Fix2aSimBoundsProc(&buf);
-		ok = ok && (rcSim == X86STRACKBUFFERCHANGE)
-			&& (buf.rtnAddr_Pvoid == reinterpret_cast<LPVOID>(kFix2aBailoutAddr))
-			&& (g_fix2aRejects == before + 1)
-			&& (g_fix2aZeroDivisorRejects == beforeZD);
-
-		buf.Eax = reinterpret_cast<DWORD>(&order);
-		buf.rtnAddr_Pvoid = NULL;
-		before = g_fix2bRejects;
-		int rcHud = Fix2bHudBoundsProc(&buf);
-		ok = ok && (rcHud == X86STRACKBUFFERCHANGE)
-			&& (buf.rtnAddr_Pvoid == reinterpret_cast<LPVOID>(kFix2bBailoutAddr))
-			&& (g_fix2bRejects == before + 1);
-
-		// A wildly out-of-range value, as a genuinely corrupted field would produce,
-		// not just "one past the end" -> same redirect.
-		order.BuildUnitID = 0xFFFFFFFFu;
-		buf.Esi = reinterpret_cast<DWORD>(&order);
-		buf.rtnAddr_Pvoid = NULL;
-		rcSim = Fix2aSimBoundsProc(&buf);
-		ok = ok && (rcSim == X86STRACKBUFFERCHANGE);
-
-		// A null order pointer -> redirect, not a dereference (SafeIsBadReadPtr(NULL)
-		// is defined to be true).
-		buf.Esi = 0;
-		buf.rtnAddr_Pvoid = NULL;
-		rcSim = Fix2aSimBoundsProc(&buf);
-		ok = ok && (rcSim == X86STRACKBUFFERCHANGE);
-
-		// A valid index but an unreadable unit pointer (buf.Edx = NULL) -> redirect,
-		// not a dereference. This is the "unreadable weapon slot" half of
-		// WeaponDivisorIsSafe, distinct from a readable-but-zero divisor.
-		buf.Edx = 0;
-		order.BuildUnitID = 0;
-		buf.Esi = reinterpret_cast<DWORD>(&order);
-		buf.rtnAddr_Pvoid = NULL;
-		rcSim = Fix2aSimBoundsProc(&buf);
-		ok = ok && (rcSim == X86STRACKBUFFERCHANGE);
-		buf.Edx = reinterpret_cast<DWORD>(unit);
+		ok = ClassifyWeaponSlot(o, un, idx, weapon) == kSlotZeroDivisor
+			&& idx == 2 && weapon == reinterpret_cast<DWORD>(&sentinelWeapon) && ok;
 
 		return ok;
 	}
 
 	bool RunSelfTest()
 	{
+		g_selfTestRunning = true;
 		struct Case { bool passed; const char* name; };
 		const Case cases[] = {
 			{ SelfTestFix1Clamp(),      "Fix1 clamp/no-clamp predicate (4 sub-cases)" },
-			{ SelfTestFix2SlotBounds(), "Fix2 slot-bounds + zero-divisor predicate, both consumers "
-			  "(healthy/sentinel-zero-divisor/bad/huge/null-order/null-unit)" },
+			{ SelfTestFix2SlotBounds(), "Fix2 slot classifier + both routers, every verdict "
+			  "(ok/zeroDivisor/badIndex/unreadableOrder/unreadableUnit/unreadableWeapon)" },
 		};
+		g_selfTestRunning = false;
 		const int total = sizeof(cases) / sizeof(cases[0]);
 		int passed = 0;
 		for (int i = 0; i < total; ++i)
@@ -674,12 +685,12 @@ namespace BuildWeaponSlotGuard
 		// reflects live gameplay only; the [selftest] and per-case log lines already
 		// written stay in the log as proof the test ran, only the counters roll back.
 		g_fix1Clamped = 0;
-		g_fix2aRejects = 0;
-		g_fix2bRejects = 0;
-		g_fix2aZeroDivisorRejects = 0;
-		g_fix2bZeroDivisorRejects = 0;
 		g_fix2aSane = 0;
 		g_fix2bSane = 0;
+		g_fix2aZeroDiv = 0;
+		g_fix2bZeroDiv = 0;
+		g_fix2aBad = 0;
+		g_fix2bBad = 0;
 		g_lastHeartbeatMs = 0;
 
 		g_fix1Hook.reset(new InlineSingleHook(
