@@ -251,6 +251,23 @@
 #endif
 
 //
+// GroundToAirGuard: lets a ground CanGuard unit be given an explicit Guard order on a
+// flying ally (e.g. a ground constructor guarding/assisting an air constructor's
+// build) -- vanilla only allows this when the GUARDIAN flies. Reachable only through
+// the explicit Guard command; the Move-click-becomes-Guard convenience is patched to
+// keep refusing this one pairing. See GroundToAirGuard.h for the full derivation.
+//
+// Class B: two of the six sites change simulation behaviour (which orders can be
+// constructed and what the sim does with one), so every client in a game must run the
+// same build. Gated to Escalation only -- this project has verified these addresses
+// against Escalation's TotalA.exe alone. Every config_*.h defines this explicitly;
+// this fallback is only for a future one that forgets to.
+//
+#ifndef GROUND_TO_AIR_GUARD_ENABLE
+#define GROUND_TO_AIR_GUARD_ENABLE 0
+#endif
+
+//
 // SharePercent: accept a `%` suffix on +setsharemetal / +setshareenergy
 // (e.g. `+setshareenergy 50%`) so the share threshold tracks a percentage of
 // max storage instead of a fixed absolute that never adjusts as storage
